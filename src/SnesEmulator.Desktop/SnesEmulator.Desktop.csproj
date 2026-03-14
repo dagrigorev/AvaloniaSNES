@@ -1,0 +1,34 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>SnesEmulator</AssemblyName>
+    <RootNamespace>SnesEmulator.Desktop</RootNamespace>
+    <Description>SNES Emulator Desktop Application with Avalonia UI</Description>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.0.7" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.0.7" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.0.7" />
+    <PackageReference Include="Avalonia.ReactiveUI" Version="11.0.7" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.0.7" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ReactiveUI" Version="19.5.31" />
+    <PackageReference Include="ReactiveUI.XamForms" Version="19.5.31" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SnesEmulator.Core\SnesEmulator.Core.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Infrastructure\SnesEmulator.Infrastructure.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Emulation\SnesEmulator.Emulation.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Hardware\SnesEmulator.Hardware.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Graphics\SnesEmulator.Graphics.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Audio\SnesEmulator.Audio.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Input\SnesEmulator.Input.csproj" />
+  </ItemGroup>
+</Project>

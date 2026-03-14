@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>SnesEmulator.Input</AssemblyName>
+    <RootNamespace>SnesEmulator.Input</RootNamespace>
+    <Description>Input handling: keyboard mapping, controller emulation, and input configuration</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SnesEmulator.Core\SnesEmulator.Core.csproj" />
+  </ItemGroup>
+</Project>

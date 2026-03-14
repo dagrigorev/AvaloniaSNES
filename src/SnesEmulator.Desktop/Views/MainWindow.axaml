@@ -1,0 +1,356 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:SnesEmulator.Desktop.ViewModels"
+        xmlns:controls="using:SnesEmulator.Desktop.Controls"
+        x:Class="SnesEmulator.Desktop.Views.MainWindow"
+        Title="SNES Emulator"
+        Width="1100" Height="780"
+        MinWidth="800" MinHeight="600"
+        Background="{StaticResource BackgroundBrush}"
+        WindowStartupLocation="CenterScreen">
+
+    <DockPanel>
+        <!-- ══ MENU BAR ══════════════════════════════════════════════════════ -->
+        <Menu DockPanel.Dock="Top"
+              Background="{StaticResource PrimaryBrush}"
+              Foreground="{StaticResource TextBrush}">
+
+            <MenuItem Header="_File">
+                <MenuItem Header="_Open ROM..." Command="{Binding OpenRomCommand}"
+                          InputGesture="Ctrl+O"/>
+                <Separator/>
+                <MenuItem Header="Save _State" Command="{Binding SaveStateCommand}"
+                          InputGesture="F5"/>
+                <MenuItem Header="_Load State" Command="{Binding LoadStateCommand}"
+                          InputGesture="F7"/>
+                <Separator/>
+                <MenuItem Header="_Exit" Click="OnExitClick"/>
+            </MenuItem>
+
+            <MenuItem Header="_Emulator">
+                <MenuItem Header="_Run"   Command="{Binding RunCommand}"   InputGesture="F1"/>
+                <MenuItem Header="_Pause" Command="{Binding PauseCommand}" InputGesture="F2"/>
+                <MenuItem Header="_Reset" Command="{Binding ResetCommand}" InputGesture="F3"/>
+                <Separator/>
+                <MenuItem Header="_Step"  Command="{Binding StepCommand}"  InputGesture="F6"/>
+            </MenuItem>
+
+            <MenuItem Header="_Help">
+                <MenuItem Header="_About" Click="OnAboutClick"/>
+            </MenuItem>
+        </Menu>
+
+        <!-- ══ STATUS BAR ════════════════════════════════════════════════════ -->
+        <Border DockPanel.Dock="Bottom"
+                Background="{StaticResource PrimaryBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="8,4">
+            <Grid ColumnDefinitions="*,Auto,Auto,Auto">
+                <!-- Status text -->
+                <TextBlock Grid.Column="0"
+                           Text="{Binding StatusText}"
+                           Foreground="{StaticResource TextDimBrush}"
+                           VerticalAlignment="Center"/>
+                <!-- PPU status -->
+                <TextBlock Grid.Column="1"
+                           Text="{Binding PpuStatus}"
+                           Foreground="{StaticResource TextDimBrush}"
+                           FontFamily="Cascadia Code, Consolas, monospace"
+                           FontSize="11"
+                           Margin="16,0"
+                           VerticalAlignment="Center"/>
+                <!-- FPS -->
+                <TextBlock Grid.Column="2"
+                           Text="{Binding FpsDisplay}"
+                           Foreground="{StaticResource AccentBrush}"
+                           FontFamily="Cascadia Code, Consolas, monospace"
+                           FontSize="11"
+                           Margin="8,0"
+                           VerticalAlignment="Center"/>
+                <!-- ROM Title -->
+                <TextBlock Grid.Column="3"
+                           Text="{Binding RomTitle}"
+                           Foreground="{StaticResource TextDimBrush}"
+                           Margin="8,0"
+                           VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+
+        <!-- ══ TOOLBAR ═══════════════════════════════════════════════════════ -->
+        <Border DockPanel.Dock="Top"
+                Background="{StaticResource PrimaryBrush}"
+                BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="8,4">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button Command="{Binding OpenRomCommand}"
+                        ToolTip.Tip="Open ROM (Ctrl+O)"
+                        Background="{StaticResource GrayBrush}"
+                        Width="90">
+                    <TextBlock Text="📂 Open"/>
+                </Button>
+
+                <Separator Width="1" Background="{StaticResource BorderBrush}" Margin="2,0"/>
+
+                <Button Command="{Binding RunCommand}"
+                        ToolTip.Tip="Run (F1)"
+                        Background="#1E4D2B"
+                        Width="70">
+                    <TextBlock Text="▶ Run" Foreground="{StaticResource SuccessBrush}"/>
+                </Button>
+
+                <Button Command="{Binding PauseCommand}"
+                        ToolTip.Tip="Pause (F2)"
+                        Background="{StaticResource PrimaryBrush}"
+                        Width="76">
+                    <TextBlock Text="⏸ Pause"/>
+                </Button>
+
+                <Button Command="{Binding ResetCommand}"
+                        ToolTip.Tip="Reset (F3)"
+                        Background="#4D1E1E"
+                        Width="76">
+                    <TextBlock Text="↺ Reset" Foreground="{StaticResource ErrorBrush}"/>
+                </Button>
+
+                <Button Command="{Binding StepCommand}"
+                        ToolTip.Tip="Step one instruction (F6)"
+                        Background="{StaticResource PrimaryBrush}"
+                        Width="70">
+                    <TextBlock Text="⏭ Step"/>
+                </Button>
+
+                <Separator Width="1" Background="{StaticResource BorderBrush}" Margin="2,0"/>
+
+                <Button Command="{Binding SaveStateCommand}"
+                        ToolTip.Tip="Save State (F5)"
+                        Width="90">
+                    <TextBlock Text="💾 Save"/>
+                </Button>
+
+                <Button Command="{Binding LoadStateCommand}"
+                        ToolTip.Tip="Load State (F7)"
+                        Width="90">
+                    <TextBlock Text="📤 Load"/>
+                </Button>
+
+                <!-- Error indicator -->
+                <Border Background="#4D1E1E"
+                        CornerRadius="4"
+                        Padding="8,4"
+                        IsVisible="{Binding HasError}"
+                        ToolTip.Tip="{Binding ErrorMessage}">
+                    <TextBlock Text="{Binding ErrorMessage}"
+                               Foreground="{StaticResource ErrorBrush}"
+                               MaxWidth="300"
+                               TextTrimming="CharacterEllipsis"/>
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- ══ MAIN CONTENT ══════════════════════════════════════════════════ -->
+        <Grid ColumnDefinitions="*,260">
+
+            <!-- LEFT: Emulator output + log -->
+            <Grid Grid.Column="0" RowDefinitions="*,180">
+
+                <!-- Game display area -->
+                <Border Grid.Row="0"
+                        Background="#000000"
+                        Margin="8,8,4,4"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        ClipToBounds="True">
+                    <Grid>
+                        <!-- The game render surface -->
+                        <controls:GameScreen x:Name="GameScreenControl"
+                                             HorizontalAlignment="Stretch"
+                                             VerticalAlignment="Stretch"/>
+
+                        <!-- "No ROM" overlay -->
+                        <StackPanel HorizontalAlignment="Center"
+                                    VerticalAlignment="Center"
+                                    IsVisible="{Binding !IsRomLoaded}"
+                                    Spacing="12">
+                            <TextBlock Text="SNES"
+                                       FontSize="48"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource AccentBrush}"
+                                       HorizontalAlignment="Center"/>
+                            <TextBlock Text="EMULATOR"
+                                       FontSize="18"
+                                       Foreground="{StaticResource TextDimBrush}"
+                                       LetterSpacing="8"
+                                       HorizontalAlignment="Center"/>
+                            <TextBlock Text="Open a ROM to start"
+                                       FontSize="13"
+                                       Foreground="{StaticResource GrayBrush}"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,16,0,0"/>
+                            <TextBlock Text="File → Open ROM  or  Ctrl+O"
+                                       FontSize="11"
+                                       Foreground="{StaticResource GrayBrush}"
+                                       HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- Log panel -->
+                <Border Grid.Row="1"
+                        Classes="panel"
+                        Margin="8,4,4,8">
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top"
+                                    Orientation="Horizontal"
+                                    Spacing="8"
+                                    Margin="0,0,0,6">
+                            <TextBlock Text="DIAGNOSTIC LOG"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       Foreground="{StaticResource TextDimBrush}"
+                                       LetterSpacing="2"
+                                       VerticalAlignment="Center"/>
+                            <Button Content="Clear"
+                                    FontSize="10"
+                                    Padding="6,2"
+                                    Click="OnClearLog"/>
+                        </StackPanel>
+
+                        <ScrollViewer x:Name="LogScrollViewer"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto">
+                            <ItemsControl ItemsSource="{Binding Logs.Entries}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid ColumnDefinitions="70,36,80,*" Margin="0,1">
+                                            <TextBlock Grid.Column="0"
+                                                       Text="{Binding Timestamp}"
+                                                       Foreground="{StaticResource TextDimBrush}"
+                                                       FontFamily="Cascadia Code, Consolas, monospace"
+                                                       FontSize="10"/>
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding Level}"
+                                                       Foreground="{Binding LevelColor}"
+                                                       FontFamily="Cascadia Code, Consolas, monospace"
+                                                       FontSize="10"/>
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding Category}"
+                                                       Foreground="{StaticResource GrayBrush}"
+                                                       FontFamily="Cascadia Code, Consolas, monospace"
+                                                       FontSize="10"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Grid.Column="3"
+                                                       Text="{Binding Message}"
+                                                       Foreground="{StaticResource TextBrush}"
+                                                       FontFamily="Cascadia Code, Consolas, monospace"
+                                                       FontSize="10"
+                                                       TextWrapping="Wrap"/>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Grid>
+
+            <!-- RIGHT: CPU / Debug panel -->
+            <Border Grid.Column="1"
+                    Classes="panel"
+                    Margin="4,8,8,8">
+                <StackPanel Spacing="12">
+
+                    <!-- Section: CPU Registers -->
+                    <StackPanel>
+                        <TextBlock Text="CPU REGISTERS"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   Foreground="{StaticResource AccentBrush}"
+                                   LetterSpacing="2"
+                                   Margin="0,0,0,8"/>
+
+                        <ItemsControl>
+                            <ItemsControl.Items>
+                                <TextBlock Text="{Binding CpuState.PcReg}"
+                                           FontFamily="Cascadia Code, Consolas, monospace"
+                                           FontSize="12" Margin="0,2"/>
+                                <TextBlock Text="{Binding CpuState.AReg}"
+                                           FontFamily="Cascadia Code, Consolas, monospace"
+                                           FontSize="12" Margin="0,2"/>
+                                <TextBlock Text="{Binding CpuState.XReg}"
+                                           FontFamily="Cascadia Code, Consolas, monospace"
+                                           FontSize="12" Margin="0,2"/>
+                                <TextBlock Text="{Binding CpuState.YReg}"
+                                           FontFamily="Cascadia Code, Consolas, monospace"
+                                           FontSize="12" Margin="0,2"/>
+                                <TextBlock Text="{Binding CpuState.SpReg}"
+                                           FontFamily="Cascadia Code, Consolas, monospace"
+                                           FontSize="12" Margin="0,2"/>
+                                <TextBlock Text="{Binding CpuState.DpReg}"
+                                           FontFamily="Cascadia Code, Consolas, monospace"
+                                           FontSize="12" Margin="0,2"/>
+                                <TextBlock Text="{Binding CpuState.DbrReg}"
+                                           FontFamily="Cascadia Code, Consolas, monospace"
+                                           FontSize="12" Margin="0,2"/>
+                            </ItemsControl.Items>
+                        </ItemsControl>
+
+                        <Separator Background="{StaticResource BorderBrush}" Margin="0,6"/>
+
+                        <TextBlock Text="{Binding CpuState.PReg}"
+                                   FontFamily="Cascadia Code, Consolas, monospace"
+                                   FontSize="12" Margin="0,2"/>
+                        <TextBlock Text="{Binding CpuState.EFlag}"
+                                   FontFamily="Cascadia Code, Consolas, monospace"
+                                   FontSize="12" Margin="0,2"/>
+                    </StackPanel>
+
+                    <Separator Background="{StaticResource BorderBrush}"/>
+
+                    <!-- Section: Controls -->
+                    <StackPanel>
+                        <TextBlock Text="CONTROLS"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   Foreground="{StaticResource AccentBrush}"
+                                   LetterSpacing="2"
+                                   Margin="0,0,0,8"/>
+
+                        <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="D-Pad" Foreground="{StaticResource TextDimBrush}" FontSize="11"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="Arrow Keys" FontSize="11"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="A / B" Foreground="{StaticResource TextDimBrush}" FontSize="11"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="X / Z" FontSize="11"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Text="X / Y" Foreground="{StaticResource TextDimBrush}" FontSize="11"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" Text="S / A" FontSize="11"/>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Text="L / R" Foreground="{StaticResource TextDimBrush}" FontSize="11"/>
+                            <TextBlock Grid.Row="3" Grid.Column="1" Text="Q / W" FontSize="11"/>
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="Start" Foreground="{StaticResource TextDimBrush}" FontSize="11"/>
+                            <TextBlock Grid.Row="4" Grid.Column="1" Text="Enter" FontSize="11"/>
+                            <TextBlock Grid.Row="5" Grid.Column="0" Text="Select" Foreground="{StaticResource TextDimBrush}" FontSize="11"/>
+                            <TextBlock Grid.Row="5" Grid.Column="1" Text="Backspace" FontSize="11"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <Separator Background="{StaticResource BorderBrush}"/>
+
+                    <!-- Section: ROM Info -->
+                    <StackPanel IsVisible="{Binding IsRomLoaded}">
+                        <TextBlock Text="ROM INFO"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   Foreground="{StaticResource AccentBrush}"
+                                   LetterSpacing="2"
+                                   Margin="0,0,0,8"/>
+                        <TextBlock Text="{Binding RomTitle}"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                </StackPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

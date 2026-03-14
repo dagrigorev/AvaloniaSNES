@@ -1,0 +1,60 @@
+## .NET / C#
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+*.swp
+*.bak
+*.tmp
+
+## NuGet
+*.nupkg
+*.snupkg
+packages/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+
+## Test results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+## Rider / JetBrains
+.idea/
+*.sln.iml
+
+## VS Code
+.vscode/
+*.code-workspace
+
+## OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+## SNES ROM files (legal reasons)
+*.smc
+*.sfc
+*.spc
+*.fig
+
+## Save states / configs (user specific)
+saves/
+*.state

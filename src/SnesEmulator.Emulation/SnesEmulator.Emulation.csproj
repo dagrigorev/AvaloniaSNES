@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>SnesEmulator.Emulation</AssemblyName>
+    <RootNamespace>SnesEmulator.Emulation</RootNamespace>
+    <Description>Core emulation logic: CPU, Memory, Timing, and SaveState subsystems</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SnesEmulator.Core\SnesEmulator.Core.csproj" />
+  </ItemGroup>
+</Project>

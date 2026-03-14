@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>SnesEmulator.Graphics</AssemblyName>
+    <RootNamespace>SnesEmulator.Graphics</RootNamespace>
+    <Description>PPU emulation, framebuffer management, and rendering pipeline</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SnesEmulator.Core\SnesEmulator.Core.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Emulation\SnesEmulator.Emulation.csproj" />
+  </ItemGroup>
+</Project>

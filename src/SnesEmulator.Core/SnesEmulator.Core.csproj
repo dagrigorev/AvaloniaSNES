@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>SnesEmulator.Core</AssemblyName>
+    <RootNamespace>SnesEmulator.Core</RootNamespace>
+    <Description>Core domain models, interfaces, and shared abstractions for the SNES Emulator</Description>
+  </PropertyGroup>
+</Project>

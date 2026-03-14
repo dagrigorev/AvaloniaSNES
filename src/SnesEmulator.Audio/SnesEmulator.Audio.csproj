@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>SnesEmulator.Audio</AssemblyName>
+    <RootNamespace>SnesEmulator.Audio</RootNamespace>
+    <Description>APU/DSP emulation architecture for SNES audio subsystem</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SnesEmulator.Core\SnesEmulator.Core.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Emulation\SnesEmulator.Emulation.csproj" />
+  </ItemGroup>
+</Project>

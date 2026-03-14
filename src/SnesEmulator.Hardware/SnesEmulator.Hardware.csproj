@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>SnesEmulator.Hardware</AssemblyName>
+    <RootNamespace>SnesEmulator.Hardware</RootNamespace>
+    <Description>Hardware-level emulation: ROM loading, memory bus, and controller hardware</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SnesEmulator.Core\SnesEmulator.Core.csproj" />
+    <ProjectReference Include="..\SnesEmulator.Emulation\SnesEmulator.Emulation.csproj" />
+  </ItemGroup>
+</Project>
