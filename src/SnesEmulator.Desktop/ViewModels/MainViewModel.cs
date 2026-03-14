@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using Avalonia.Threading;
+using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
-using ReactiveUI;
 using SnesEmulator.Core.Exceptions;
 using SnesEmulator.Core.Interfaces;
 using SnesEmulator.Core.Models;
@@ -15,7 +17,7 @@ namespace SnesEmulator.Desktop.ViewModels;
 /// Follows MVVM: exposes commands and observable properties consumed by MainWindow.axaml.
 /// All emulator interaction goes through the IEmulator facade.
 /// </summary>
-public sealed class MainViewModel : ReactiveObject
+public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IEmulator _emulator;
     private readonly ILogger<MainViewModel> _logger;
@@ -25,6 +27,15 @@ public sealed class MainViewModel : ReactiveObject
     public LogViewModel      Logs     { get; }
 
     // ── Observable Properties ─────────────────────────────────────────────────
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void RaiseAndSetIfChanged<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
 
     private string _statusText = "Ready — Load a ROM to begin";
     public string StatusText
@@ -44,14 +55,22 @@ public sealed class MainViewModel : ReactiveObject
     public bool IsRunning
     {
         get => _isRunning;
-        private set => this.RaiseAndSetIfChanged(ref _isRunning, value);
+        private set
+        {
+            this.RaiseAndSetIfChanged(ref _isRunning, value);
+            NotifyCommandsCanExecuteChanged();
+        }
     }
 
     private bool _isRomLoaded;
     public bool IsRomLoaded
     {
         get => _isRomLoaded;
-        private set => this.RaiseAndSetIfChanged(ref _isRomLoaded, value);
+        private set
+        {
+            this.RaiseAndSetIfChanged(ref _isRomLoaded, value);
+            NotifyCommandsCanExecuteChanged();
+        }
     }
 
     private string _fpsDisplay = "0 FPS";
@@ -92,7 +111,7 @@ public sealed class MainViewModel : ReactiveObject
     public ICommand LoadStateCommand { get; }
 
     // ── FPS tracking ──────────────────────────────────────────────────────────
-    private int _frameCount;
+    private volatile int _frameCount;
     private DateTime _lastFpsUpdate = DateTime.UtcNow;
 
     // ── Public interface for ROM file open ────────────────────────────────────
@@ -114,13 +133,13 @@ public sealed class MainViewModel : ReactiveObject
         _logger   = logger;
 
         // Wire commands
-        OpenRomCommand   = ReactiveCommand.Create(OnOpenRom);
-        RunCommand       = ReactiveCommand.Create(OnRun,   this.WhenAnyValue(x => x.IsRomLoaded));
-        PauseCommand     = ReactiveCommand.Create(OnPause, this.WhenAnyValue(x => x.IsRunning));
-        ResetCommand     = ReactiveCommand.Create(OnReset, this.WhenAnyValue(x => x.IsRomLoaded));
-        StepCommand      = ReactiveCommand.Create(OnStep,  this.WhenAnyValue(x => x.IsRomLoaded, x => x.IsRunning, (l, r) => l && !r));
-        SaveStateCommand = ReactiveCommand.Create(OnSaveState, this.WhenAnyValue(x => x.IsRomLoaded));
-        LoadStateCommand = ReactiveCommand.Create(OnLoadState, this.WhenAnyValue(x => x.IsRomLoaded));
+        OpenRomCommand   = new RelayCommand(OnOpenRom);
+        RunCommand       = new RelayCommand(OnRun,   () => IsRomLoaded);
+        PauseCommand     = new RelayCommand(OnPause, () => IsRunning);
+        ResetCommand     = new RelayCommand(OnReset, () => IsRomLoaded);
+        StepCommand = new RelayCommand(OnStep, () => IsRomLoaded && !IsRunning);
+        SaveStateCommand = new RelayCommand(OnSaveState, () => IsRomLoaded);
+        LoadStateCommand = new RelayCommand(OnLoadState, () => IsRomLoaded);
 
         // Subscribe to emulator events
         _emulator.StateChanged    += OnEmulatorStateChanged;
@@ -132,7 +151,7 @@ public sealed class MainViewModel : ReactiveObject
         {
             UpdateDiagnostics();
             return true; // Keep running
-        }, TimeSpan.FromMilliseconds(200));
+        }, TimeSpan.FromMilliseconds(500));
     }
 
     // ── Command handlers ──────────────────────────────────────────────────────
@@ -141,6 +160,16 @@ public sealed class MainViewModel : ReactiveObject
     {
         // Delegate file dialog to the View
         RequestOpenFileDialog?.Invoke();
+    }
+
+    private void NotifyCommandsCanExecuteChanged()
+    {
+        ((RelayCommand)RunCommand).NotifyCanExecuteChanged();
+        ((RelayCommand)PauseCommand).NotifyCanExecuteChanged();
+        ((RelayCommand)ResetCommand).NotifyCanExecuteChanged();
+        ((RelayCommand)StepCommand).NotifyCanExecuteChanged();
+        ((RelayCommand)SaveStateCommand).NotifyCanExecuteChanged();
+        ((RelayCommand)LoadStateCommand).NotifyCanExecuteChanged();
     }
 
     /// <summary>Called by the View after the user selects a ROM file.</summary>
@@ -264,7 +293,7 @@ public sealed class MainViewModel : ReactiveObject
     private void OnFrameReady(object? sender, FrameReadyEventArgs e)
     {
         // Track FPS
-        _frameCount++;
+        System.Threading.Interlocked.Increment(ref _frameCount);
     }
 
     private void UpdateDiagnostics()
@@ -272,9 +301,10 @@ public sealed class MainViewModel : ReactiveObject
         // FPS calculation
         var now = DateTime.UtcNow;
         var elapsed = (now - _lastFpsUpdate).TotalSeconds;
-        if (elapsed >= 1.0)
+        if (elapsed >= 0.4)
         {
-            FpsDisplay = $"{_frameCount / elapsed:F1} FPS";
+            var count = System.Threading.Interlocked.Exchange(ref _frameCount, 0);
+            FpsDisplay = $"{count / elapsed:F1} FPS";
             _frameCount = 0;
             _lastFpsUpdate = now;
         }

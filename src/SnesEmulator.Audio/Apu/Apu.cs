@@ -53,24 +53,20 @@ public sealed class Apu : IApu
     }
 
     // ── IEmulatorComponent ────────────────────────────────────────────────────
-
+    private bool _handshakeComplete;
     public void Reset()
     {
         Array.Clear(_portsFromCpu);
         Array.Clear(_portsFromApu);
         Array.Clear(_apuRam);
         _masterCycleAccum = 0;
-        _sampleAccum = 0;
+        _handshakeComplete = false;
 
-        // Load IPL ROM into top of APU RAM ($FFC0–$FFFF)
         Buffer.BlockCopy(IplRom, 0, _apuRam, 0xFFC0, IplRom.Length);
 
-        // IPL ROM execution begins: APU sets port 0 = $AA, port 1 = $BB
-        // to signal readiness to the main CPU.
+        // Signal APU ready: $AA/$BB
         _portsFromApu[0] = 0xAA;
         _portsFromApu[1] = 0xBB;
-
-        _logger.LogDebug("APU reset, IPL ROM loaded.");
     }
 
     // ── IApu ──────────────────────────────────────────────────────────────────
@@ -92,12 +88,22 @@ public sealed class Apu : IApu
     public void WritePort(byte port, byte value)
     {
         if (port > 3) return;
-        // Main CPU writes to APU input
-        _portsFromCpu[port & 3] = value;
+        _portsFromCpu[port] = value;
 
-        // Simplified handshake: echo the value back so initialization loops complete
-        // A full SPC700 would process these transfers asynchronously.
-        SimulateIplHandshake(port, value);
+        if (!_handshakeComplete)
+        {
+            if (port == 0 && value == 0xCC)
+            {
+                // CPU acknowledged ready signal — handshake done
+                _handshakeComplete = true;
+                _portsFromApu[0] = 0xCC;
+            }
+            // Don't echo during handshake — keep $AA/$BB visible
+            return;
+        }
+
+        // Post-handshake: echo everything back unconditionally
+        _portsFromApu[port] = value;
     }
 
     public void FillAudioBuffer(short[] buffer, int offset, int count)
@@ -119,18 +125,31 @@ public sealed class Apu : IApu
     ///   3. APU acknowledges with port 0 = $CC
     ///   4. Data transfer proceeds via ports 0–3
     /// </summary>
+    private byte _lastPort0Write;
+
     private void SimulateIplHandshake(byte port, byte value)
     {
-        if (port == 0 && value == 0xCC)
+        switch (port)
         {
-            // CPU requests data transfer — echo acknowledgment
-            _portsFromApu[0] = 0xCC;
-            _logger.LogDebug("APU: IPL handshake acknowledged ($CC)");
-        }
-        else if (port == 0 && value != 0)
-        {
-            // Subsequent transfer step — echo port 0 to signal receipt
-            _portsFromApu[0] = value;
+            case 0:
+                if (value == 0xCC)
+                {
+                    // Step 2: CPU requests transfer start → acknowledge
+                    _portsFromApu[0] = 0xCC;
+                }
+                else if (value != 0 && value != _lastPort0Write)
+                {
+                    // Step 4+: CPU sends incrementing counter → echo it back
+                    _portsFromApu[0] = value;
+                }
+                _lastPort0Write = value;
+                break;
+
+            case 1:
+                // Some games write the destination address to port 1
+                // Echo it to unblock the wait loop
+                _portsFromApu[1] = value;
+                break;
         }
     }
 

@@ -13,13 +13,9 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.0.7" />
     <PackageReference Include="Avalonia.ReactiveUI" Version="11.0.7" />
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.0.7" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="ReactiveUI" Version="19.5.31" />
-    <PackageReference Include="ReactiveUI.XamForms" Version="19.5.31" />
   </ItemGroup>
 
   <ItemGroup>

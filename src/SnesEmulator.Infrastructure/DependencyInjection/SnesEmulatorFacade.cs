@@ -164,13 +164,15 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
         _runCts = new CancellationTokenSource();
         var token = _runCts.Token;
 
-        _runTask = Task.Run(async () =>
+        _runTask = Task.Run(() =>
         {
-            var target = TimeSpan.FromSeconds(1.0 / 60.0);
+            const double targetFps = 60.0;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            long frameCount = 0;
+
             while (!token.IsCancellationRequested)
             {
-                var t0 = DateTime.UtcNow;
-                try   { _loop.RunFrame(); }
+                try { _loop.RunFrame(); }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
@@ -179,12 +181,16 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
                     TransitionTo(EmulatorState.Error);
                     return;
                 }
-                var rem = target - (DateTime.UtcNow - t0);
-                if (rem > TimeSpan.Zero)
-                {
-                    try { await Task.Delay(rem, token); }
-                    catch (OperationCanceledException) { break; }
-                }
+
+                frameCount++;
+
+                // Throttle: spin-wait to hit target FPS
+                // Avoid Task.Delay — it has 15ms minimum resolution on Windows
+                double targetMs = frameCount * (1000.0 / targetFps);
+                double elapsedMs = sw.Elapsed.TotalMilliseconds;
+                int sleepMs = (int)(targetMs - elapsedMs);
+                if (sleepMs > 1)
+                    Thread.Sleep(sleepMs);
             }
         }, token);
     }

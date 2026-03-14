@@ -45,7 +45,9 @@ public sealed class GameScreen : Control
     {
         UpdateBitmap(e.Pixels, e.Width, e.Height);
         _hasFrame = true;
-        Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
+
+        // Use Send instead of Post to ensure it actually runs
+        Dispatcher.UIThread.InvokeAsync(InvalidateVisual, DispatcherPriority.Render);
     }
 
     private void UpdateBitmap(IReadOnlyList<uint> pixels, int width, int height)
