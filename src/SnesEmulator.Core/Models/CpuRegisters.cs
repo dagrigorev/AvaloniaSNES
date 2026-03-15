@@ -19,10 +19,10 @@ public sealed record CpuRegisters
 
     // ── Index Registers ──────────────────────────────────────────────────────
     /// <summary>X index register. 16-bit with X=0, 8-bit with X=1.</summary>
-    public ushort X { get; init; }
+    public ushort X { get; set; }
 
     /// <summary>Y index register. 16-bit with X=0, 8-bit with X=1.</summary>
-    public ushort Y { get; init; }
+    public ushort Y { get; set; }
 
     // ── Stack & Direct Page ─────────────────────────────────────────────────
     /// <summary>Stack pointer. 16-bit in native mode, $01xx in emulation mode.</summary>

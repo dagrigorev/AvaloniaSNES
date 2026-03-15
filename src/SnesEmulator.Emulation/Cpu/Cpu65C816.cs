@@ -317,6 +317,8 @@ public sealed class Cpu65C816 : ICpu
         table[0x8A] = Op_TXA;
         table[0x9A] = Op_TXS;
         table[0x98] = Op_TYA;
+        table[0x9B] = Op_TXY;
+        table[0xBB] = Op_TYX;
         table[0x5B] = Op_TCD;
         table[0x7B] = Op_TDC;
         table[0x1B] = Op_TCS;
@@ -521,8 +523,11 @@ public sealed class Cpu65C816 : ICpu
         table[0xDB] = () => { /* STP: stop clock */ return 3; };
 
         // ── Block Move ────────────────────────────────────────────────────────
-        table[0x44] = Op_MVN;
-        table[0x54] = Op_MVP;
+        // 65C816 block move opcodes:
+        //   $44 = MVP (Move Positive / decrement X,Y)
+        //   $54 = MVN (Move Negative / increment X,Y)
+        table[0x44] = Op_MVP;
+        table[0x54] = Op_MVN;
 
         return table;
     }
@@ -1107,8 +1112,12 @@ public sealed class Cpu65C816 : ICpu
     }
     private int Op_JSL_AbsoluteLong()
     {
+        // Long operands are encoded little-endian as: low, high, bank.
+        // Reading bank first jumps into garbage for real ROM startup code.
+        byte lo   = _addr.FetchByte();
+        byte hi   = _addr.FetchByte();
         byte bank = _addr.FetchByte();
-        ushort off = _addr.FetchWord();
+        ushort off = BitHelper.MakeWord(lo, hi);
         Push(_state.PBR);
         PushWord((ushort)(_state.PC - 1));
         _state.PBR = bank;
@@ -1181,6 +1190,22 @@ public sealed class Cpu65C816 : ICpu
         return 8;
     }
     private int Op_WDM() { _addr.FetchByte(); return 2; } // Reserved/NOP-like
+
+    private int Op_TYX()
+    {
+        _state.X = _state.Is8BitIndex ? (byte)_state.Y : _state.Y;
+        if (_state.Is8BitIndex) _state.SetNZ8((byte)_state.X);
+        else _state.SetNZ16(_state.X);
+        return 2;
+    }
+
+    private int Op_TXY()
+    {
+        _state.Y = _state.Is8BitIndex ? (byte)_state.X : _state.X;
+        if (_state.Is8BitIndex) _state.SetNZ8((byte)_state.Y);
+        else _state.SetNZ16(_state.Y);
+        return 2;
+    }
 
     // ── Block Move ────────────────────────────────────────────────────────────
 
