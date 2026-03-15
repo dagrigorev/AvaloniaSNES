@@ -34,6 +34,8 @@ public sealed class Cpu65C816 : ICpu
     private bool _nmiPending;
     private bool _irqPending;
     private int _startupTraceRemaining;
+    private int _wramExecutionTraceRemaining;
+    private int _staLongXTraceRemaining;
 
     public string Name => "65C816 CPU";
     public CpuRegisters Registers => _state.ToSnapshot();
@@ -59,6 +61,8 @@ public sealed class Cpu65C816 : ICpu
         _irqPending = false;
         TotalCycles = 0;
         _startupTraceRemaining = 128;
+        _wramExecutionTraceRemaining = 64;
+        _staLongXTraceRemaining = 128;
 
         // Load reset vector from $FFFC (emulation mode, PBR=0)
         ushort resetVector = _bus.ReadWord(SnesConstants.EmuResetVector);
@@ -86,6 +90,17 @@ public sealed class Cpu65C816 : ICpu
 
         // ── Fetch opcode ──────────────────────────────────────────────────────
         uint opcodeAddress = _state.FullPC;
+        if (_bus is SnesEmulator.Emulation.Memory.MemoryBus traceBus)
+            traceBus.SetCpuTraceContext(_state.PBR, _state.PC);
+
+        if (((opcodeAddress >> 16) & 0xFF) is 0x7E or 0x7F && _wramExecutionTraceRemaining > 0)
+        {
+            _logger.LogDebug(
+                "CPU executing from WRAM at ${Addr:X6}: A=${A:X4} X=${X:X4} Y=${Y:X4} SP=${SP:X4} DP=${DP:X4} P=${P:X2} E=${E}",
+                opcodeAddress, _state.C, _state.X, _state.Y, _state.SP, _state.DP, _state.P, _state.EmulationMode ? 1 : 0);
+            _wramExecutionTraceRemaining--;
+        }
+
         byte opcode = _bus.Read(opcodeAddress);
         _state.PC++;
 
@@ -714,7 +729,32 @@ public sealed class Cpu65C816 : ICpu
     private int Op_STA_AbsoluteX()         { StoreA(_addr.AbsoluteX());          return _state.Is8BitAccumulator ? 5 : 6; }
     private int Op_STA_AbsoluteY()         { StoreA(_addr.AbsoluteY());          return _state.Is8BitAccumulator ? 5 : 6; }
     private int Op_STA_AbsoluteLong()      { StoreA(_addr.AbsoluteLong());       return _state.Is8BitAccumulator ? 5 : 6; }
-    private int Op_STA_AbsoluteLongX()     { StoreA(_addr.AbsoluteLongX());      return _state.Is8BitAccumulator ? 5 : 6; }
+    private int Op_STA_AbsoluteLongX()
+    {
+        byte lo = _addr.FetchByte();
+        byte hi = _addr.FetchByte();
+        byte bank = _addr.FetchByte();
+        uint baseAddr = (uint)(lo | (hi << 8) | (bank << 16));
+        ushort x = _state.Is8BitIndex ? (byte)_state.X : _state.X;
+        uint effectiveAddr = (baseAddr + x) & 0xFFFFFF;
+
+        if (_staLongXTraceRemaining > 0)
+        {
+            _logger.LogDebug(
+                "STA long,X at ${Pc:X6}: base=${Base:X6} X=${X:X4} -> eff=${Eff:X6} A=${A:X4} C=${C:X4} M8={M8}",
+                ((_state.PBR << 16) | (ushort)(_state.PC - 4)),
+                baseAddr,
+                _state.X,
+                effectiveAddr,
+                _state.A,
+                _state.C,
+                _state.Is8BitAccumulator ? 1 : 0);
+            _staLongXTraceRemaining--;
+        }
+
+        StoreA(effectiveAddr);
+        return _state.Is8BitAccumulator ? 5 : 6;
+    }
     private int Op_STA_XIndirect()         { StoreA(_addr.DirectPageXIndirect()); return _state.Is8BitAccumulator ? 6 : 7; }
     private int Op_STA_IndirectY()         { StoreA(_addr.DirectPageIndirectY()); return _state.Is8BitAccumulator ? 6 : 7; }
     private int Op_STA_Indirect()          { StoreA(_addr.DirectPageIndirect());  return _state.Is8BitAccumulator ? 5 : 6; }

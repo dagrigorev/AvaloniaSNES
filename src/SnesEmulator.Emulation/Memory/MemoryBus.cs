@@ -37,13 +37,24 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private byte _hvbjoy;     // $4212 — H/V blank + joypad busy flags
     private byte _memsel;     // $420D — ROM access speed
     private byte _nmitimen;   // $4200 — NMI/IRQ/joypad enable
-    private bool _nmiFlag;    // Set when VBlank starts, cleared on $4210 read
+    private bool _vblankLevel;
+    private bool _prevVblankLevel;
+    private bool _rdnmiLatched;
+    private bool _nmiPending;
     private byte _wrio;       // $4201 — Joypad programmable I/O port
     private byte _wrmpya;     // $4202 — Multiplicand
     private byte _wrmpyb;     // $4203 — Multiplier
     private ushort _rdmpy;    // $4216/17 — Multiply result / division remainder
     private ushort _rddiv;    // $4214/15 — Divide result
     private ushort _wrdiva;   // $4204/05 — latched dividend for division
+
+    private byte _lastCpuPbr;
+    private ushort _lastCpuPc;
+    private int _traceFrame = -1;
+    private int _traceScanline = -1;
+    private int _ioTraceCount;
+    private int _vblankTraceCount;
+    private int _nmiReadTraceCount;
 
     public string Name => "MemoryBus";
 
@@ -79,11 +90,21 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _controllerLatch = 0;
         _memsel          = 0;
         _nmitimen        = 0;
-        _nmiFlag         = false;
+        _vblankLevel     = false;
+        _prevVblankLevel = false;
+        _rdnmiLatched    = false;
+        _nmiPending      = false;
         _hvbjoy          = 0;
         _wrdiva          = 0;
         _rddiv           = 0;
         _rdmpy           = 0;
+        _lastCpuPbr      = 0;
+        _lastCpuPc       = 0;
+        _traceFrame      = -1;
+        _traceScanline   = -1;
+        _ioTraceCount    = 0;
+        _vblankTraceCount = 0;
+        _nmiReadTraceCount = 0;
         Array.Clear(_dmaRegisters);
         if (_loop is not null) _loop.NmiEnabled = false;
     }
@@ -101,17 +122,64 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
              (inHBlank ? 0x40 : 0x00));
     }
 
-    /// <summary>
-    /// Sets the NMI flag in $4210. Called by EmulationLoop at VBlank start.
-    /// Games read $4210 to detect VBlank without using the NMI interrupt.
-    /// </summary>
-    public void SetNmiFlag() => _nmiFlag = true;
+    public void SetCpuTraceContext(byte pbr, ushort pc)
+    {
+        _lastCpuPbr = pbr;
+        _lastCpuPc = pc;
+    }
 
-    /// <summary>
-    /// Clears the NMI flag. Called at the start of each new frame
-    /// so the flag only reflects the current frame's VBlank.
-    /// </summary>
-    public void ClearNmiFlag() => _nmiFlag = false;
+    public void SetVBlankState(bool isVBlank, int frameNumber = -1, int scanline = -1)
+    {
+        _traceFrame = frameNumber;
+        _traceScanline = scanline;
+        _vblankLevel = isVBlank;
+
+        if (_prevVblankLevel != isVBlank && _vblankTraceCount < 512)
+        {
+            _logger.LogDebug(
+                "VBlank level -> {State} at frame {Frame}, scanline {Scanline}, NMITIMEN=${Nmitimen:X2}, pending={Pending}",
+                isVBlank ? 1 : 0, _traceFrame, _traceScanline, _nmitimen, _nmiPending ? 1 : 0);
+            _vblankTraceCount++;
+        }
+
+        bool enteredVBlank = !_prevVblankLevel && isVBlank;
+        if (enteredVBlank)
+        {
+            _rdnmiLatched = true;
+            if ((_nmitimen & 0x80) != 0)
+                _nmiPending = true;
+
+            if (_vblankTraceCount < 512)
+            {
+                _logger.LogDebug(
+                    "VBlank edge at frame {Frame}, scanline {Scanline}, RDNMI latched=1, NMI pending={Pending}",
+                    _traceFrame, _traceScanline, _nmiPending ? 1 : 0);
+                _vblankTraceCount++;
+            }
+        }
+
+        _prevVblankLevel = isVBlank;
+    }
+
+    public bool ConsumeNmi()
+    {
+        if (!_nmiPending)
+            return false;
+
+        _nmiPending = false;
+
+        if (_vblankTraceCount < 512)
+        {
+            _logger.LogDebug(
+                "ConsumeNmi at frame {Frame}, scanline {Scanline}",
+                _traceFrame, _traceScanline);
+            _vblankTraceCount++;
+        }
+
+        return true;
+    }
+
+    public void ClearNmiFlag() => _rdnmiLatched = false;
 
     // ── IMemoryBus ────────────────────────────────────────────────────────────
 
@@ -171,6 +239,13 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
         if (bank == 0x7E || bank == 0x7F)
         {
+            if (_ioTraceCount < 512)
+            {
+                _logger.LogDebug(
+                    "WRAM long write ${Addr:X6} = ${Val:X2} from ${Pbr:X2}:{Pc:X4}",
+                    address & 0xFFFFFF, value, _lastCpuPbr, _lastCpuPc);
+                _ioTraceCount++;
+            }
             _wram.WriteDirect(((bank & 1) << 16) | offset, value);
             return;
         }
@@ -193,7 +268,17 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         => _ppu?.ReadRegister((byte)(offset - 0x2100)) ?? OpenBus();
 
     private void WritePpuRegister(ushort offset, byte value)
-        => _ppu?.WriteRegister((byte)(offset - 0x2100), value);
+    {
+        if (_ioTraceCount < 512 && (offset == 0x2100 || offset == 0x212C || (offset >= 0x2115 && offset <= 0x2119)))
+        {
+            _logger.LogDebug(
+                "CPU write ${Reg:X4} from ${Pbr:X2}:{Pc:X4} value=${Val:X2} (frame {Frame}, scanline {Scanline})",
+                offset, _lastCpuPbr, _lastCpuPc, value, _traceFrame, _traceScanline);
+            _ioTraceCount++;
+        }
+
+        _ppu?.WriteRegister((byte)(offset - 0x2100), value);
+    }
 
     private byte ReadApuPort(ushort offset)
         => _apu?.ReadPort((byte)(offset - 0x2140)) ?? OpenBus();
@@ -244,14 +329,29 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         {
             case 0x4210:
             {
-                // RDNMI: bit7 = NMI flag (cleared on read), bit1 = CPU version (65C816=1)
-                // Games read this to detect VBlank start without using NMI interrupt
-                byte val = (byte)((_nmiFlag ? 0x80 : 0x00) | 0x02);
-                _nmiFlag = false;
+                byte val = (byte)((_rdnmiLatched ? 0x80 : 0x00) | 0x02);
+                if (_nmiReadTraceCount < 256)
+                {
+                    _logger.LogDebug(
+                        "CPU read RDNMI from ${Pbr:X2}:{Pc:X4} -> ${Val:X2} (frame {Frame}, scanline {Scanline}, vblank={VBlank}, pending={Pending})",
+                        _lastCpuPbr, _lastCpuPc, val, _traceFrame, _traceScanline, _vblankLevel ? 1 : 0, _nmiPending ? 1 : 0);
+                    _nmiReadTraceCount++;
+                }
+                _rdnmiLatched = false;
                 return val;
             }
             case 0x4211: return 0x00;   // TIMEUP: IRQ flag (not implemented)
-            case 0x4212: return _hvbjoy;
+            case 0x4212:
+            {
+                if (_nmiReadTraceCount < 256)
+                {
+                    _logger.LogDebug(
+                        "CPU read HVBJOY from ${Pbr:X2}:{Pc:X4} -> ${Val:X2} (frame {Frame}, scanline {Scanline})",
+                        _lastCpuPbr, _lastCpuPc, _hvbjoy, _traceFrame, _traceScanline);
+                    _nmiReadTraceCount++;
+                }
+                return _hvbjoy;
+            }
             case 0x4213: return _wrio;
             case 0x4214: return BitHelper.LowByte(_rddiv);
             case 0x4215: return BitHelper.HighByte(_rddiv);
@@ -271,6 +371,13 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         {
             case 0x4200: // NMITIMEN — NMI/IRQ/auto-joypad enable
                 _nmitimen = value;
+                if (_ioTraceCount < 512)
+                {
+                    _logger.LogDebug(
+                        "CPU write NMITIMEN from ${Pbr:X2}:{Pc:X4} value=${Val:X2} (frame {Frame}, scanline {Scanline})",
+                        _lastCpuPbr, _lastCpuPc, value, _traceFrame, _traceScanline);
+                    _ioTraceCount++;
+                }
                 if (_loop is not null)
                     _loop.NmiEnabled = (value & 0x80) != 0;
                 break;
@@ -295,7 +402,16 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                     _rdmpy = (ushort)(dividend % value);
                 }
                 break;
-            case 0x420B: ExecuteDma(value);         break;
+            case 0x420B:
+                if (_ioTraceCount < 512)
+                {
+                    _logger.LogDebug(
+                        "CPU write MDMAEN from ${Pbr:X2}:{Pc:X4} value=${Val:X2} (frame {Frame}, scanline {Scanline})",
+                        _lastCpuPbr, _lastCpuPc, value, _traceFrame, _traceScanline);
+                    _ioTraceCount++;
+                }
+                ExecuteDma(value);
+                break;
             case 0x420C: /* HDMAEN stub */           break;
             case 0x420D: _memsel = value;            break;
         }

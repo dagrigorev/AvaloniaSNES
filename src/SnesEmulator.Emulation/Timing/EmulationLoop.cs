@@ -32,6 +32,10 @@ public sealed class EmulationLoop
     private const int VBlankStartScanline     = 225;
     private const int CpuCyclesMultiplier     = SnesConstants.CpuSlowCycles;
 
+    private int _currentFrame;
+    private int _currentScanline;
+    private int _currentScanlineMasterCycles;
+
     public bool NmiEnabled { get; set; } = false;
 
     public EmulationLoop(ICpu cpu, IPpu ppu, IApu apu, MemoryBus bus,
@@ -47,59 +51,70 @@ public sealed class EmulationLoop
     public void Reset()
     {
         NmiEnabled = false;
-        // Start with screen in active display state (not VBlank)
-        _bus.SetHvBjoy(inVBlank: false, inHBlank: false);
+        _currentFrame = 0;
+        _currentScanline = 0;
+        _currentScanlineMasterCycles = 0;
+        ApplyScanlineState();
         _bus.ClearNmiFlag();
     }
 
     public long RunFrame()
     {
         long totalMasterCycles = 0;
+        int startFrame = _currentFrame;
 
-        // Clear NMI flag at start of each new frame (scanline 0)
-        // This ensures the flag only reflects THIS frame's VBlank
-        _bus.ClearNmiFlag();
-
-        for (int sl = 0; sl < ScanlinesPerFrame; sl++)
+        do
         {
-            bool inVBlank = sl >= VBlankStartScanline;
-
-            // Update $4212 at scanline start: HBlank=false, VBlank per scanline
-            _bus.SetHvBjoy(inVBlank, inHBlank: false);
-
-            // Fire NMI exactly once: at the first scanline of VBlank
-            if (sl == VBlankStartScanline && NmiEnabled)
-                _cpu.TriggerNmi();
-
-            // Set NMI flag in $4210 when VBlank starts (readable even without NMI interrupt)
-            if (sl == VBlankStartScanline)
-                _bus.SetNmiFlag();
-
-            // Run CPU instructions for this scanline
-            int scanlineCycles = 0;
-            while (scanlineCycles < MasterCyclesPerScanline)
-            {
-                int cpuCycles    = _cpu.Step();
-                int masterCycles = cpuCycles * CpuCyclesMultiplier;
-                _ppu.Clock(masterCycles);
-                _apu.Clock(masterCycles);
-                scanlineCycles    += masterCycles;
-                totalMasterCycles += masterCycles;
-            }
-
-            // Set HBlank at end of scanline
-            _bus.SetHvBjoy(inVBlank, inHBlank: true);
-        }
+            totalMasterCycles += StepOne();
+        } while (_currentFrame == startFrame);
 
         return totalMasterCycles;
     }
 
     public int StepOne()
     {
+        ApplyScanlineState();
+
+        if (NmiEnabled && _bus.ConsumeNmi())
+            _cpu.TriggerNmi();
+
         int cpuCycles    = _cpu.Step();
         int masterCycles = cpuCycles * CpuCyclesMultiplier;
         _ppu.Clock(masterCycles);
         _apu.Clock(masterCycles);
+
+        AdvanceTiming(masterCycles);
         return masterCycles;
+    }
+
+    private void ApplyScanlineState()
+    {
+        bool inVBlank = _currentScanline >= VBlankStartScanline;
+        bool inHBlank = _currentScanlineMasterCycles >= MasterCyclesPerScanline - 4;
+        _bus.SetHvBjoy(inVBlank, inHBlank);
+        _bus.SetVBlankState(inVBlank, _currentFrame, _currentScanline);
+    }
+
+    private void AdvanceTiming(int masterCycles)
+    {
+        _currentScanlineMasterCycles += masterCycles;
+
+        while (_currentScanlineMasterCycles >= MasterCyclesPerScanline)
+        {
+            bool inVBlank = _currentScanline >= VBlankStartScanline;
+            _bus.SetHvBjoy(inVBlank, inHBlank: true);
+
+            _currentScanlineMasterCycles -= MasterCyclesPerScanline;
+            _currentScanline++;
+
+            if (_currentScanline >= ScanlinesPerFrame)
+            {
+                _currentScanline = 0;
+                _currentFrame++;
+                _bus.ClearNmiFlag();
+            }
+
+            ApplyScanlineState();
+        }
     }
 }
