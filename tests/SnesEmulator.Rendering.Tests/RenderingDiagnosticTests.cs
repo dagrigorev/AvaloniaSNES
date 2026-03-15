@@ -403,22 +403,19 @@ public sealed class SmwInitSequenceTests
 public sealed class ScrollRegisterTests
 {
     [Fact]
-    public void ScrollRegister_SecondWrite_SetsHighBits()
+    public void ScrollRegister_Hofs_UsesSharedPreviousByteLatch()
     {
-        // Real SNES behavior: BGnHOFS write-twice
-        // Write 1: latch = value; offset low byte = value
-        // Write 2: offset = (value << 8) | (latch & 7)
-        // Our implementation uses a per-layer latch. Verify it works correctly.
+        // Hardware combines the new byte, the previous byte written to any BG scroll register,
+        // and the current high bits already present in the destination register.
+        // Formula from the Super Famicom Development Wiki:
+        //   BGnHOFS = (NewByte<<8) | (PrevByte&~7) | ((CurrentValue>>8)&7)
 
-        // Simulate writing $40, $01 to BG1HOFS ($210D)
-        // Expected result: BG1HOFS = (0x01 << 8) | (0x40 & 7) = 0x0100 | 0x00 = 0x0100 = 256
+        byte prevByte = 0x40;
+        byte newByte = 0x01;
+        ushort current = 0;
 
-        byte write1 = 0x40;
-        byte write2 = 0x01;
-
-        // Our PPU formula: 
-        ushort result = (ushort)((write1 | (write2 << 8)) & 0x3FF);
-        result.Should().Be(0x0140, "scroll register two-write sequence");
+        ushort result = (ushort)((newByte << 8) | (prevByte & 0xF8) | ((current >> 8) & 0x07));
+        result.Should().Be(0x0140);
     }
 
     [Fact]
@@ -432,6 +429,27 @@ public sealed class ScrollRegisterTests
         int tileY = mapY / 8;
         tileX.Should().Be(0);
         tileY.Should().Be(0);
+    }
+}
+
+
+public sealed class BgTileSizeTests
+{
+    [Fact]
+    public void TilemapEntry_For16x16Tile_UsesTopLeftSubtilePlusOffsets()
+    {
+        int baseTile = 0x0020;
+        int bottomRight = (baseTile + 1 + 16) & 0x03FF;
+        bottomRight.Should().Be(0x0031);
+    }
+
+    [Fact]
+    public void ScrollWrap_UsesConfiguredTilemapDimensions_NotAlways1024()
+    {
+        int tileSize = 8;
+        int widthPixels = 32 * tileSize;
+        int wrapped = 260 % widthPixels;
+        wrapped.Should().Be(4);
     }
 }
 

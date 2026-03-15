@@ -95,8 +95,9 @@ public sealed class Ppu : IPpu
     // OAM internal pointer
     private ushort _oamPointer;
 
-    // H/V offset write latches (each register is written twice for 16-bit)
-    private byte[] _bgOffsetLatch = new byte[4];
+    // BG scroll registers share a single previous-byte latch across all BGnHOFS/BGnVOFS writes.
+    // This matches the SNES write-twice behaviour closely enough for common boot/title code.
+    private byte _bgScrollPrevByte;
 
     // ── Events ────────────────────────────────────────────────────────────────
     public event EventHandler<FrameReadyEventArgs>? FrameReady;
@@ -138,6 +139,7 @@ public sealed class Ppu : IPpu
         _tm = 0;
         _vmadd = 0;
         _cgadd = 0;
+        _bgScrollPrevByte = 0;
         _oamPointer = 0;
         _frameBuffer.Clear();
         _stat77 = 0;
@@ -309,41 +311,33 @@ public sealed class Ppu : IPpu
     /// </summary>
     private uint SampleBgLayer2bpp(int layer, int x, int y)
     {
-        // Get scroll offsets for this layer
+        byte sc = GetBgSc(layer);
+        int tileSize = GetBgTileSize(layer);
+        (int mapWidthPixels, int mapHeightPixels) = GetBgMapDimensions(sc, tileSize);
+
         int scrollX = _bgHOffset[layer] & 0x3FF;
         int scrollY = _bgVOffset[layer] & 0x3FF;
 
-        // Map position: wrap at 256 or 512 pixels depending on SC size
-        int mapX = (x + scrollX) & 0x3FF;
-        int mapY = (y + scrollY) & 0x3FF;
+        int mapX = WrapBgCoordinate(x + scrollX, mapWidthPixels);
+        int mapY = WrapBgCoordinate(y + scrollY, mapHeightPixels);
 
-        int tileX = mapX / 8;
-        int tileY = mapY / 8;
-        int pixX  = mapX % 8;
-        int pixY  = mapY % 8;
+        int tileX = mapX / tileSize;
+        int tileY = mapY / tileSize;
+        int pixX  = mapX % tileSize;
+        int pixY  = mapY % tileSize;
 
-        // Get tilemap base address from BGnSC register
-        byte sc = GetBgSc(layer);
-
-        // Tilemap entry address. BGnSC bits 0-1 select 32x32 / 64x32 / 32x64 / 64x64 maps.
         int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
-
         if (tilemapAddr + 1 >= _vram.Length) return 0;
-        ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
 
+        ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
         int tileNum  = entry & 0x03FF;
         bool hflip   = (entry & 0x4000) != 0;
         bool vflip   = (entry & 0x8000) != 0;
         int palette  = (entry >> 10) & 0x07;
 
-        // Effective pixel within tile
-        int tpx = hflip ? 7 - pixX : pixX;
-        int tpy = vflip ? 7 - pixY : pixY;
+        ResolveBgTilePixel(tileSize, hflip, vflip, pixX, pixY, ref tileNum, out int tpx, out int tpy);
 
-        // Character data base from BG12NBA / BG34NBA
         int charBase = GetBgCharBase(layer);
-
-        // 2bpp: 8 bytes per tile row; 2 bytes per row
         int tileAddr = charBase + tileNum * 16 + tpy * 2;
         if (tileAddr + 1 >= _vram.Length) return 0;
 
@@ -352,10 +346,8 @@ public sealed class Ppu : IPpu
 
         int shift = 7 - tpx;
         int colorIndex = (((lo >> shift) & 1)) | (((hi >> shift) & 1) << 1);
+        if (colorIndex == 0) return 0;
 
-        if (colorIndex == 0) return 0; // Transparent
-
-        // Palette lookup: 2bpp palettes start at index (palette*4 + colorIndex)
         int paletteBase = (palette * 4 + colorIndex) * 2;
         if (paletteBase + 1 >= _cgram.Length) return 0xFF808080;
 
@@ -368,43 +360,40 @@ public sealed class Ppu : IPpu
     /// </summary>
     private uint SampleBgLayer4bpp(int layer, int x, int y)
     {
+        byte sc = GetBgSc(layer);
+        int tileSize = GetBgTileSize(layer);
+        (int mapWidthPixels, int mapHeightPixels) = GetBgMapDimensions(sc, tileSize);
+
         int scrollX = _bgHOffset[layer] & 0x3FF;
         int scrollY = _bgVOffset[layer] & 0x3FF;
 
-        int mapX = (x + scrollX) & 0x3FF;
-        int mapY = (y + scrollY) & 0x3FF;
+        int mapX = WrapBgCoordinate(x + scrollX, mapWidthPixels);
+        int mapY = WrapBgCoordinate(y + scrollY, mapHeightPixels);
 
-        int tileX = mapX / 8;
-        int tileY = mapY / 8;
-        int pixX  = mapX % 8;
-        int pixY  = mapY % 8;
+        int tileX = mapX / tileSize;
+        int tileY = mapY / tileSize;
+        int pixX  = mapX % tileSize;
+        int pixY  = mapY % tileSize;
 
-        byte sc = GetBgSc(layer);
         int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
-
         if (tilemapAddr + 1 >= _vram.Length) return 0;
-        ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
 
+        ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
         int tileNum  = entry & 0x03FF;
         bool hflip   = (entry & 0x4000) != 0;
         bool vflip   = (entry & 0x8000) != 0;
         int palette  = (entry >> 10) & 0x07;
 
-        int tpx = hflip ? 7 - pixX : pixX;
-        int tpy = vflip ? 7 - pixY : pixY;
+        ResolveBgTilePixel(tileSize, hflip, vflip, pixX, pixY, ref tileNum, out int tpx, out int tpy);
 
         int charBase = GetBgCharBase(layer);
-        // 4bpp: 32 bytes per tile (4 bytes per row)
-        // 4bpp tile layout: 32 bytes total
-        // Bytes  0-15: bitplanes 0+1 (row Y at offset Y*2, Y*2+1)
-        // Bytes 16-31: bitplanes 2+3 (row Y at offset Y*2+16, Y*2+17)
         int tileAddr = charBase + tileNum * 32 + tpy * 2;
         if (tileAddr + 17 >= _vram.Length) return 0;
 
-        byte p0lo = _vram[tileAddr];          // bitplane 0, row tpy
-        byte p0hi = _vram[tileAddr + 1];      // bitplane 1, row tpy
-        byte p1lo = _vram[tileAddr + 16];     // bitplane 2, row tpy
-        byte p1hi = _vram[tileAddr + 17];     // bitplane 3, row tpy
+        byte p0lo = _vram[tileAddr];
+        byte p0hi = _vram[tileAddr + 1];
+        byte p1lo = _vram[tileAddr + 16];
+        byte p1hi = _vram[tileAddr + 17];
 
         int shift = 7 - tpx;
         int colorIndex = ((p0lo >> shift) & 1)
@@ -414,7 +403,6 @@ public sealed class Ppu : IPpu
 
         if (colorIndex == 0) return 0;
 
-        // 4bpp palettes: each has 16 colors; BG palettes start at palette 0
         int paletteBase = (palette * 16 + colorIndex) * 2;
         if (paletteBase + 1 >= _cgram.Length) return 0xFF808080;
 
@@ -423,6 +411,44 @@ public sealed class Ppu : IPpu
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static int WrapBgCoordinate(int value, int size)
+    {
+        if (size <= 0) return 0;
+        int result = value % size;
+        return result < 0 ? result + size : result;
+    }
+
+    private (int WidthPixels, int HeightPixels) GetBgMapDimensions(byte sc, int tileSize)
+    {
+        int widthTiles = (sc & 0x01) != 0 ? 64 : 32;
+        int heightTiles = (sc & 0x02) != 0 ? 64 : 32;
+        return (widthTiles * tileSize, heightTiles * tileSize);
+    }
+
+    private int GetBgTileSize(int layer)
+    {
+        int bit = 4 + layer;
+        return ((_bgmode >> bit) & 0x01) != 0 ? 16 : 8;
+    }
+
+    private static void ResolveBgTilePixel(int tileSize, bool hflip, bool vflip, int pixX, int pixY, ref int tileNum, out int tpx, out int tpy)
+    {
+        if (tileSize == 16)
+        {
+            int effX = hflip ? 15 - pixX : pixX;
+            int effY = vflip ? 15 - pixY : pixY;
+            int subTileX = effX >= 8 ? 1 : 0;
+            int subTileY = effY >= 8 ? 1 : 0;
+            tileNum = (tileNum + subTileX + subTileY * 16) & 0x03FF;
+            tpx = effX & 7;
+            tpy = effY & 7;
+            return;
+        }
+
+        tpx = hflip ? 7 - pixX : pixX;
+        tpy = vflip ? 7 - pixY : pixY;
+    }
 
     private void WriteBgSc(int layer, byte value)
     {
@@ -690,14 +716,15 @@ public sealed class Ppu : IPpu
 
     private void WriteBgHOffset(int layer, byte value)
     {
-        _bgHOffset[layer] = (ushort)((_bgOffsetLatch[layer] | (value << 8)) & 0x3FF);
-        _bgOffsetLatch[layer] = value;
+        ushort current = _bgHOffset[layer];
+        _bgHOffset[layer] = (ushort)((value << 8) | (_bgScrollPrevByte & 0xF8) | ((current >> 8) & 0x07));
+        _bgScrollPrevByte = value;
     }
 
     private void WriteBgVOffset(int layer, byte value)
     {
-        _bgVOffset[layer] = (ushort)((_bgOffsetLatch[layer] | (value << 8)) & 0x3FF);
-        _bgOffsetLatch[layer] = value;
+        _bgVOffset[layer] = (ushort)((value << 8) | _bgScrollPrevByte);
+        _bgScrollPrevByte = value;
     }
 
     private void WriteColdata(byte value)
