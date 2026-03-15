@@ -336,6 +336,27 @@ public sealed class CpuInstructionTests
     // ── NOP cycles ────────────────────────────────────────────────────────────
 
     [Fact]
+    public void ORA_StackRelative_ReadsFromStackRelativeAddress()
+    {
+        var (cpu, mem) = CreateCpu();
+        mem[0x0204] = 0x80;
+        mem[0x8000] = 0xA9; // LDA #$01
+        mem[0x8001] = 0x01;
+        mem[0x8002] = 0x03; // ORA $05,S   => [$01FF + 5] = $0204
+        mem[0x8003] = 0x05;
+        mem[0xFFFC] = 0x00;
+        mem[0xFFFD] = 0x80;
+
+        cpu.Reset();
+        cpu.Step();
+        cpu.Step();
+
+        cpu.Registers.A.Should().Be(0x81);
+        cpu.Registers.FlagN.Should().BeTrue();
+        cpu.Registers.FlagZ.Should().BeFalse();
+    }
+
+    [Fact]
     public void NOP_Returns2Cycles()
     {
         var (cpu, mem) = CreateCpu();

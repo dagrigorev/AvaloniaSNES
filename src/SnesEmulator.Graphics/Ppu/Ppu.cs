@@ -324,11 +324,9 @@ public sealed class Ppu : IPpu
 
         // Get tilemap base address from BGnSC register
         byte sc = GetBgSc(layer);
-        int tilemapBase = (sc >> 2) * 0x800; // Each increment = 2KB
 
-        // Tilemap entry address
-        int tilemapAddr = tilemapBase + (tileY * 32 + tileX) * 2;
-        tilemapAddr &= 0xFFFF;
+        // Tilemap entry address. BGnSC bits 0-1 select 32x32 / 64x32 / 32x64 / 64x64 maps.
+        int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
 
         if (tilemapAddr + 1 >= _vram.Length) return 0;
         ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
@@ -382,8 +380,7 @@ public sealed class Ppu : IPpu
         int pixY  = mapY % 8;
 
         byte sc = GetBgSc(layer);
-        int tilemapBase = (sc >> 2) * 0x800;
-        int tilemapAddr = (tilemapBase + (tileY * 32 + tileX) * 2) & 0xFFFF;
+        int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
 
         if (tilemapAddr + 1 >= _vram.Length) return 0;
         ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
@@ -427,6 +424,26 @@ public sealed class Ppu : IPpu
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private void WriteBgSc(int layer, byte value)
+    {
+        byte previous = GetBgSc(layer);
+        if (previous != value)
+        {
+            int widthTiles = (value & 0x01) != 0 ? 64 : 32;
+            int heightTiles = (value & 0x02) != 0 ? 64 : 32;
+            _logger.LogDebug("BG{Layer}SC: ${Old:X2} → ${New:X2} (base=${Base:X4}, size={Width}x{Height})",
+                layer + 1, previous, value, (value >> 2) * 0x800, widthTiles, heightTiles);
+        }
+
+        switch (layer)
+        {
+            case 0: _bg1sc[0] = value; break;
+            case 1: _bg2sc[0] = value; break;
+            case 2: _bg3sc[0] = value; break;
+            default: _bg4sc[0] = value; break;
+        }
+    }
+
     private byte GetBgSc(int layer) => layer switch
     {
         0 => _bg1sc[0],
@@ -434,6 +451,19 @@ public sealed class Ppu : IPpu
         2 => _bg3sc[0],
         _ => _bg4sc[0]
     };
+
+    private int GetTilemapEntryAddress(byte sc, int tileX, int tileY)
+    {
+        int baseAddress = ((sc >> 2) & 0x3F) * 0x800;
+        int localX = tileX & 31;
+        int localY = tileY & 31;
+
+        int screen = 0;
+        if ((sc & 0x01) != 0 && tileX >= 32) screen |= 1;
+        if ((sc & 0x02) != 0 && tileY >= 32) screen |= 2;
+
+        return (baseAddress + screen * 0x800 + (localY * 32 + localX) * 2) & 0xFFFF;
+    }
 
     private int GetBgCharBase(int layer)
     {
@@ -501,10 +531,10 @@ public sealed class Ppu : IPpu
                 _bgmode = value;
                 break;
             case 0x06: _mosaic = value; break;
-            case 0x07: _bg1sc[0] = value; break;
-            case 0x08: _bg2sc[0] = value; break;
-            case 0x09: _bg3sc[0] = value; break;
-            case 0x0A: _bg4sc[0] = value; break;
+            case 0x07: WriteBgSc(0, value); break;
+            case 0x08: WriteBgSc(1, value); break;
+            case 0x09: WriteBgSc(2, value); break;
+            case 0x0A: WriteBgSc(3, value); break;
             case 0x0B: _bg12nba = value; break;
             case 0x0C: _bg34nba = value; break;
             case 0x0D: WriteBgHOffset(0, value); break;
@@ -551,21 +581,21 @@ public sealed class Ppu : IPpu
 
     private void WriteVramLow(byte value)
     {
-        int addr = GetVramAddress() * 2;
+        int addr = GetVramByteAddress();
         if (addr < _vram.Length) _vram[addr] = value;
         if ((_vmain & 0x80) == 0) IncrementVramAddress(); // Increment on low write if bit7=0
     }
 
     private void WriteVramHigh(byte value)
     {
-        int addr = GetVramAddress() * 2 + 1;
+        int addr = GetVramByteAddress() + 1;
         if (addr < _vram.Length) _vram[addr] = value;
         if ((_vmain & 0x80) != 0) IncrementVramAddress(); // Increment on high write if bit7=1
     }
 
     private byte ReadVramLow()
     {
-        int addr = GetVramAddress() * 2;
+        int addr = GetVramByteAddress();
         byte val = addr < _vram.Length ? _vram[addr] : (byte)0;
         if ((_vmain & 0x80) == 0) IncrementVramAddress();
         return val;
@@ -573,13 +603,13 @@ public sealed class Ppu : IPpu
 
     private byte ReadVramHigh()
     {
-        int addr = GetVramAddress() * 2 + 1;
+        int addr = GetVramByteAddress() + 1;
         byte val = addr < _vram.Length ? _vram[addr] : (byte)0;
         if ((_vmain & 0x80) != 0) IncrementVramAddress();
         return val;
     }
 
-    private int GetVramAddress() => _vmadd & 0x7FFF;
+    private int GetVramByteAddress() => (RemapVramWordAddress(_vmadd) << 1) & 0xFFFF;
 
     private void IncrementVramAddress()
     {
@@ -589,7 +619,18 @@ public sealed class Ppu : IPpu
             1 => 32,
             _ => 128
         };
-        _vmadd = (ushort)((_vmadd + increment) & 0x7FFF);
+        _vmadd = (ushort)((_vmadd + increment) & 0xFFFF);
+    }
+
+    private ushort RemapVramWordAddress(ushort address)
+    {
+        return ((_vmain >> 2) & 0x03) switch
+        {
+            0 => address,
+            1 => (ushort)((address & 0xFF00) | ((address & 0x001F) << 3) | ((address >> 5) & 0x0007)),
+            2 => (ushort)((address & 0xFE00) | ((address & 0x003F) << 3) | ((address >> 6) & 0x0007)),
+            _ => (ushort)((address & 0xFC00) | ((address & 0x007F) << 3) | ((address >> 7) & 0x0007))
+        };
     }
 
     // ── OAM access ────────────────────────────────────────────────────────────

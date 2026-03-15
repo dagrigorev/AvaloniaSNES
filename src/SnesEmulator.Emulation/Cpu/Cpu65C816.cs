@@ -399,6 +399,7 @@ public sealed class Cpu65C816 : ICpu
         table[0xD4] = Op_PEI;
 
         // ── Arithmetic ────────────────────────────────────────────────────────
+        table[0x63] = Op_ADC_StackRelative;
         table[0x69] = Op_ADC_Immediate;
         table[0x6D] = Op_ADC_Absolute;
         table[0x79] = Op_ADC_AbsoluteY;
@@ -409,6 +410,7 @@ public sealed class Cpu65C816 : ICpu
         table[0x61] = Op_ADC_XIndirect;
         table[0x71] = Op_ADC_IndirectY;
         table[0x72] = Op_ADC_Indirect;
+        table[0x73] = Op_ADC_StackRelIndirectY;
         table[0x67] = Op_ADC_DpIndirectLong;
         table[0x77] = Op_ADC_DpIndirectLongY;
 
@@ -445,6 +447,7 @@ public sealed class Cpu65C816 : ICpu
         table[0x88] = Op_DEY;
 
         // ── Logic ─────────────────────────────────────────────────────────────
+        table[0x23] = Op_AND_StackRelative;
         table[0x29] = Op_AND_Immediate;
         table[0x2D] = Op_AND_Absolute;
         table[0x39] = Op_AND_AbsoluteY;
@@ -457,10 +460,12 @@ public sealed class Cpu65C816 : ICpu
         table[0x21] = Op_AND_XIndirect;
         table[0x31] = Op_AND_IndirectY;
         table[0x32] = Op_AND_Indirect;
+        table[0x33] = Op_AND_StackRelIndirectY;
         table[0x27] = Op_AND_DpIndirectLong;
         table[0x37] = Op_AND_DpIndirectLongY;
         table[0x3D] = Op_AND_AbsoluteX;
 
+        table[0x03] = Op_ORA_StackRelative;
         table[0x04] = Op_TSB_DirectPage;
         table[0x09] = Op_ORA_Immediate;
         table[0x0C] = Op_TSB_Absolute;
@@ -474,6 +479,7 @@ public sealed class Cpu65C816 : ICpu
         table[0x01] = Op_ORA_XIndirect;
         table[0x11] = Op_ORA_IndirectY;
         table[0x12] = Op_ORA_Indirect;
+        table[0x13] = Op_ORA_StackRelIndirectY;
         table[0x07] = Op_ORA_DpIndirectLong;
         table[0x17] = Op_ORA_DpIndirectLongY;
 
@@ -488,6 +494,7 @@ public sealed class Cpu65C816 : ICpu
         table[0x41] = Op_EOR_XIndirect;
         table[0x51] = Op_EOR_IndirectY;
         table[0x52] = Op_EOR_Indirect;
+        table[0x53] = Op_EOR_StackRelIndirectY;
         table[0x47] = Op_EOR_DpIndirectLong;
         table[0x57] = Op_EOR_DpIndirectLongY;
 
@@ -530,6 +537,7 @@ public sealed class Cpu65C816 : ICpu
         table[0xC1] = Op_CMP_XIndirect;
         table[0xD1] = Op_CMP_IndirectY;
         table[0xD2] = Op_CMP_Indirect;
+        table[0xD3] = Op_CMP_StackRelIndirectY;
         table[0xC7] = Op_CMP_DpIndirectLong;
         table[0xD7] = Op_CMP_DpIndirectLongY;
         table[0xDD] = Op_CMP_AbsoluteX;
@@ -940,6 +948,8 @@ public sealed class Cpu65C816 : ICpu
     private int Op_ADC_Indirect()  { Adc(_state.Is8BitAccumulator ? ReadByte(_addr.DirectPageIndirect())  : ReadWord(_addr.DirectPageIndirect()));  return _state.Is8BitAccumulator ? 5 : 6; }
     private int Op_ADC_DpIndirectLong() { Adc(_state.Is8BitAccumulator ? ReadByte(_addr.DirectPageIndirectLong()) : ReadWord(_addr.DirectPageIndirectLong())); return _state.Is8BitAccumulator ? 6 : 7; }
     private int Op_ADC_DpIndirectLongY() { Adc(_state.Is8BitAccumulator ? ReadByte(_addr.DirectPageIndirectLongY()) : ReadWord(_addr.DirectPageIndirectLongY())); return _state.Is8BitAccumulator ? 6 : 7; }
+    private int Op_ADC_StackRelative() { Adc(_state.Is8BitAccumulator ? ReadByte(_addr.StackRelative()) : ReadWord(_addr.StackRelative())); return _state.Is8BitAccumulator ? 4 : 5; }
+    private int Op_ADC_StackRelIndirectY() { Adc(_state.Is8BitAccumulator ? ReadByte(_addr.StackRelativeIndirectY()) : ReadWord(_addr.StackRelativeIndirectY())); return _state.Is8BitAccumulator ? 7 : 8; }
     private int Op_ADC_AbsoluteX()
     {
         Adc(_state.Is8BitAccumulator
@@ -1032,8 +1042,11 @@ public sealed class Cpu65C816 : ICpu
     private int Op_AND_Indirect()   { And(LoadOperand(_addr.DirectPageIndirect()));  return _state.Is8BitAccumulator ? 5:6; }
     private int Op_AND_DpIndirectLong() { And(LoadOperand(_addr.DirectPageIndirectLong())); return _state.Is8BitAccumulator ? 6:7; }
     private int Op_AND_DpIndirectLongY() { And(LoadOperand(_addr.DirectPageIndirectLongY())); return _state.Is8BitAccumulator ? 6:7; }
+    private int Op_AND_StackRelative() { And(LoadOperand(_addr.StackRelative())); return _state.Is8BitAccumulator ? 4 : 5; }
+    private int Op_AND_StackRelIndirectY() { And(LoadOperand(_addr.StackRelativeIndirectY())); return _state.Is8BitAccumulator ? 7 : 8; }
     private int Op_AND_AbsoluteX() { And(LoadOperand(_addr.AbsoluteX())); return _state.Is8BitAccumulator ? 4 : 5; }
 
+    private int Op_ORA_StackRelative() { Ora(LoadOperand(_addr.StackRelative())); return _state.Is8BitAccumulator ? 4 : 5; }
     private int Op_ORA_Immediate()  { Ora(LoadOperand(_state.Is8BitAccumulator ? _addr.Immediate8() : _addr.Immediate16())); return _state.Is8BitAccumulator ? 2:3; }
     private int Op_ORA_Absolute()   { Ora(LoadOperand(_addr.Absolute()));   return _state.Is8BitAccumulator ? 4:5; }
     private int Op_ORA_AbsoluteX()
@@ -1049,6 +1062,7 @@ public sealed class Cpu65C816 : ICpu
     private int Op_ORA_XIndirect()  { Ora(LoadOperand(_addr.DirectPageXIndirect())); return _state.Is8BitAccumulator ? 6:7; }
     private int Op_ORA_IndirectY()  { Ora(LoadOperand(_addr.DirectPageIndirectY())); return _state.Is8BitAccumulator ? 5:6; }
     private int Op_ORA_Indirect()   { Ora(LoadOperand(_addr.DirectPageIndirect()));  return _state.Is8BitAccumulator ? 5:6; }
+    private int Op_ORA_StackRelIndirectY() { Ora(LoadOperand(_addr.StackRelativeIndirectY())); return _state.Is8BitAccumulator ? 7 : 8; }
     private int Op_ORA_DpIndirectLong() { Ora(LoadOperand(_addr.DirectPageIndirectLong())); return _state.Is8BitAccumulator ? 6:7; }
     private int Op_ORA_DpIndirectLongY() { Ora(LoadOperand(_addr.DirectPageIndirectLongY())); return _state.Is8BitAccumulator ? 6:7; }
 
@@ -1063,6 +1077,7 @@ public sealed class Cpu65C816 : ICpu
     private int Op_EOR_XIndirect()  { Eor(LoadOperand(_addr.DirectPageXIndirect())); return _state.Is8BitAccumulator ? 6:7; }
     private int Op_EOR_IndirectY()  { Eor(LoadOperand(_addr.DirectPageIndirectY())); return _state.Is8BitAccumulator ? 5:6; }
     private int Op_EOR_Indirect()   { Eor(LoadOperand(_addr.DirectPageIndirect()));  return _state.Is8BitAccumulator ? 5:6; }
+    private int Op_EOR_StackRelIndirectY() { Eor(LoadOperand(_addr.StackRelativeIndirectY())); return _state.Is8BitAccumulator ? 7 : 8; }
     private int Op_EOR_DpIndirectLong() { Eor(LoadOperand(_addr.DirectPageIndirectLong())); return _state.Is8BitAccumulator ? 6:7; }
     private int Op_EOR_DpIndirectLongY() { Eor(LoadOperand(_addr.DirectPageIndirectLongY())); return _state.Is8BitAccumulator ? 6:7; }
     private int Op_EOR_AbsoluteX() { Eor(LoadOperand(_addr.AbsoluteX())); return _state.Is8BitAccumulator ? 4 : 5; }
@@ -1144,6 +1159,11 @@ public sealed class Cpu65C816 : ICpu
     {
         Cmp(_state.C, LoadOperand(_addr.AbsoluteX()), _state.Is8BitAccumulator);
         return _state.Is8BitAccumulator ? 4 : 5;
+    }
+    private int Op_CMP_StackRelIndirectY()
+    {
+        Cmp(_state.C, LoadOperand(_addr.StackRelativeIndirectY()), _state.Is8BitAccumulator);
+        return _state.Is8BitAccumulator ? 7 : 8;
     }
 
     private int Op_CPX_Immediate()  { Cmp(_state.X, _state.Is8BitIndex ? ReadByte(_addr.Immediate8()) : ReadWord(_addr.Immediate16()), _state.Is8BitIndex); return _state.Is8BitIndex ? 2:3; }
