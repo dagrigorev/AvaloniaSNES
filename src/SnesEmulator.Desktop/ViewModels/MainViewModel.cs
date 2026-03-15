@@ -5,6 +5,7 @@ using System.Windows.Input;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
+using SnesEmulator.Infrastructure.Logging;
 using SnesEmulator.Core.Exceptions;
 using SnesEmulator.Core.Interfaces;
 using SnesEmulator.Core.Models;
@@ -21,6 +22,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IEmulator _emulator;
     private readonly ILogger<MainViewModel> _logger;
+    private readonly DiagnosticLogSink _logSink;
 
     // ── Child ViewModels ──────────────────────────────────────────────────────
     public CpuStateViewModel CpuState { get; }
@@ -38,6 +40,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     }
 
     private string _statusText = "Ready — Load a ROM to begin";
+
+    private string _sessionLogPath = string.Empty;
+    public string SessionLogPath
+    {
+        get => _sessionLogPath;
+        private set => this.RaiseAndSetIfChanged(ref _sessionLogPath, value);
+    }
     public string StatusText
     {
         get => _statusText;
@@ -128,11 +137,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         IEmulator emulator,
         CpuStateViewModel cpuState,
         LogViewModel logs,
+        DiagnosticLogSink logSink,
         ILogger<MainViewModel> logger)
     {
         _emulator = emulator;
         CpuState  = cpuState;
         Logs      = logs;
+        _logSink  = logSink;
         _logger   = logger;
 
         // Wire commands
@@ -180,6 +191,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         try
         {
+            SessionLogPath = _logSink.StartRomSession(filePath);
+            _logger.LogInformation("Diagnostic file session started: {LogPath}", SessionLogPath);
             _emulator.LoadRom(filePath);
             RomTitle  = $"⬤  {_emulator.LoadedRom?.Title ?? "Unknown"}";
             StatusText = $"Loaded: {Path.GetFileName(filePath)} ({_emulator.LoadedRom?.MappingMode})";
@@ -187,6 +200,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ErrorMessage = string.Empty;
             HasError = false;
             _logger.LogInformation("ROM loaded: {File}", filePath);
+            _logger.LogInformation("Session log file: {LogPath}", SessionLogPath);
         }
         catch (RomLoadException ex)
         {

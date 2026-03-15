@@ -213,19 +213,26 @@
                         Margin="8,4,4,8">
                     <DockPanel>
                         <StackPanel DockPanel.Dock="Top"
-                                    Orientation="Horizontal"
-                                    Spacing="8"
+                                    Spacing="4"
                                     Margin="0,0,0,6">
-                            <TextBlock Text="DIAGNOSTIC LOG"
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="DIAGNOSTIC LOG"
+                                           FontSize="10"
+                                           FontWeight="Bold"
+                                           Foreground="{StaticResource TextDimBrush}"
+                                           LetterSpacing="2"
+                                           VerticalAlignment="Center"/>
+                                <Button Content="Clear"
+                                        FontSize="10"
+                                        Padding="6,2"
+                                        Click="OnClearLog"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding SessionLogPath}"
+                                       Foreground="{StaticResource GrayBrush}"
+                                       FontFamily="Cascadia Code, Consolas, monospace"
                                        FontSize="10"
-                                       FontWeight="Bold"
-                                       Foreground="{StaticResource TextDimBrush}"
-                                       LetterSpacing="2"
-                                       VerticalAlignment="Center"/>
-                            <Button Content="Clear"
-                                    FontSize="10"
-                                    Padding="6,2"
-                                    Click="OnClearLog"/>
+                                       TextWrapping="Wrap"
+                                       IsVisible="{Binding IsRomLoaded}"/>
                         </StackPanel>
 
                         <ScrollViewer x:Name="LogScrollViewer"

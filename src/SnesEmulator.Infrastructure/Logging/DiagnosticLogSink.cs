@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.Text;
 
 namespace SnesEmulator.Infrastructure.Logging;
 
@@ -12,6 +13,8 @@ public sealed class DiagnosticLogSink : ILoggerProvider
     private readonly int _maxEntries;
     private readonly Queue<LogEntry> _entries;
     private readonly object _lock = new();
+    private StreamWriter? _sessionWriter;
+    private string? _currentSessionLogPath;
 
     /// <summary>Raised on the caller's thread when a new log entry is appended.</summary>
     public event EventHandler<LogEntry>? LogAdded;
@@ -20,6 +23,90 @@ public sealed class DiagnosticLogSink : ILoggerProvider
     {
         _maxEntries = maxEntries;
         _entries = new Queue<LogEntry>(maxEntries);
+    }
+
+
+    /// <summary>Absolute path to the currently active session log file, if any.</summary>
+    public string? CurrentSessionLogPath
+    {
+        get
+        {
+            lock (_lock) return _currentSessionLogPath;
+        }
+    }
+
+    /// <summary>Starts a new on-disk diagnostic log session for the specified ROM path.</summary>
+    public string StartRomSession(string romFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(romFilePath))
+            throw new ArgumentException("ROM file path must be provided.", nameof(romFilePath));
+
+        lock (_lock)
+        {
+            CloseSessionWriter_NoLock();
+
+            string safeRomName = SanitizeFileName(Path.GetFileNameWithoutExtension(romFilePath));
+            string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            string logsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SnesEmulator",
+                "logs",
+                safeRomName);
+
+            Directory.CreateDirectory(logsDir);
+
+            _currentSessionLogPath = Path.Combine(logsDir, $"{safeRomName}_{stamp}.log");
+            _sessionWriter = new StreamWriter(_currentSessionLogPath, append: false, Encoding.UTF8)
+            {
+                AutoFlush = true
+            };
+
+            _sessionWriter.WriteLine($"# SNES Emulator diagnostic session");
+            _sessionWriter.WriteLine($"# ROM: {romFilePath}");
+            _sessionWriter.WriteLine($"# Started: {DateTimeOffset.Now:O}");
+            _sessionWriter.WriteLine();
+
+            return _currentSessionLogPath;
+        }
+    }
+
+    /// <summary>Stops the current on-disk session, if one is active.</summary>
+    public void StopRomSession()
+    {
+        lock (_lock)
+        {
+            CloseSessionWriter_NoLock();
+            _currentSessionLogPath = null;
+        }
+    }
+
+    private void CloseSessionWriter_NoLock()
+    {
+        if (_sessionWriter is null)
+            return;
+
+        try
+        {
+            _sessionWriter.WriteLine();
+            _sessionWriter.WriteLine($"# Session closed: {DateTimeOffset.Now:O}");
+            _sessionWriter.Flush();
+            _sessionWriter.Dispose();
+        }
+        catch
+        {
+        }
+        finally
+        {
+            _sessionWriter = null;
+        }
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var chars = value.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray();
+        string sanitized = new string(chars).Trim();
+        return string.IsNullOrWhiteSpace(sanitized) ? "rom" : sanitized;
     }
 
     /// <summary>Returns a snapshot of recent log entries.</summary>
@@ -42,13 +129,21 @@ public sealed class DiagnosticLogSink : ILoggerProvider
             if (_entries.Count >= _maxEntries)
                 _entries.Dequeue();
             _entries.Enqueue(entry);
+            _sessionWriter?.WriteLine($"{entry.Timestamp:HH:mm:ss.fff} {entry.LevelIndicator} {entry.ShortCategory,-16} {entry.Message}");
         }
         LogAdded?.Invoke(this, entry);
     }
 
     public ILogger CreateLogger(string categoryName) => new DiagnosticLogger(categoryName, this);
 
-    public void Dispose() { }
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            CloseSessionWriter_NoLock();
+            _currentSessionLogPath = null;
+        }
+    }
 }
 
 /// <summary>
