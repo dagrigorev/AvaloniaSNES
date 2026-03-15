@@ -48,6 +48,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
     private byte _lastCpuPbr;
     private ushort _lastCpuPc;
+    private int _dmaPayloadTraceRemaining = 256;
     private int _traceFrame = -1;
     private int _traceScanline = -1;
     private int _ioTraceCount;
@@ -497,6 +498,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             bool decrement   = (control & 0x10) != 0;
             int  transferMode = control & 0x07;
 
+            uint startSrcAddr = srcAddr;
             _logger.LogDebug("DMA ch{Ch}: {Count} bytes from {Src:X6} → $21{Reg:X2} mode={Mode}",
                 ch, byteCount, srcAddr, destReg, transferMode);
 
@@ -508,6 +510,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             // 4: four consecutive registers            (rarely used)
             for (int i = 0; i < byteCount; i++)
             {
+                uint curSrcAddr = srcAddr;
                 byte data = Read(srcAddr);
 
                 byte regOffset = transferMode switch
@@ -518,13 +521,30 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                     _ => 0                         // modes 0,2: always same register
                 };
 
-                Write((uint)(0x2100 | destReg | regOffset), data);
+                byte targetReg = (byte)(destReg | regOffset);
+                if (_dmaPayloadTraceRemaining > 0 && (targetReg is 0x18 or 0x19 or 0x22) && (data != 0 || i < 16))
+                {
+                    _logger.LogDebug(
+                        "DMA payload ch{Ch} src=${Src:X6} -> $21{Reg:X2} data=${Data:X2} idx={Index}/{Count} PC=${Pbr:X2}:{Pc:X4}",
+                        ch, curSrcAddr, targetReg, data, i, byteCount, _lastCpuPbr, _lastCpuPc);
+                    _dmaPayloadTraceRemaining--;
+                }
+
+                Write((uint)(0x2100 | targetReg), data);
 
                 if (!noIncrement)
                 {
                     if (decrement) srcAddr--;
                     else           srcAddr++;
                 }
+            }
+
+            if ((destReg is 0x18 or 0x19 or 0x22) && _dmaPayloadTraceRemaining > 0)
+            {
+                _logger.LogDebug(
+                    "DMA ch{Ch} summary: start=${Start:X6} end=${End:X6} dest=$21{Reg:X2} count={Count} mode={Mode}",
+                    ch, startSrcAddr, srcAddr, destReg, byteCount, transferMode);
+                _dmaPayloadTraceRemaining--;
             }
         }
     }

@@ -38,6 +38,7 @@ public sealed class Cpu65C816 : ICpu
     private int _staLongXTraceRemaining;
     private int _controlFlowTraceRemaining;
     private bool _wasExecutingFromWram;
+    private bool _wasInSmwBootstrapLoop;
 
     public string Name => "65C816 CPU";
     public CpuRegisters Registers => _state.ToSnapshot();
@@ -62,11 +63,12 @@ public sealed class Cpu65C816 : ICpu
         _nmiPending = false;
         _irqPending = false;
         TotalCycles = 0;
-        _startupTraceRemaining = 128;
+        _startupTraceRemaining = 768;
         _wramExecutionTraceRemaining = 64;
         _staLongXTraceRemaining = 128;
-        _controlFlowTraceRemaining = 128;
+        _controlFlowTraceRemaining = 512;
         _wasExecutingFromWram = false;
+        _wasInSmwBootstrapLoop = false;
 
         // Load reset vector from $FFFC (emulation mode, PBR=0)
         ushort resetVector = _bus.ReadWord(SnesConstants.EmuResetVector);
@@ -96,6 +98,16 @@ public sealed class Cpu65C816 : ICpu
         uint opcodeAddress = _state.FullPC;
         if (_bus is SnesEmulator.Emulation.Memory.MemoryBus traceBus)
             traceBus.SetCpuTraceContext(_state.PBR, _state.PC);
+
+        bool inSmwBootstrapLoop = opcodeAddress is >= 0x008034 and <= 0x008048;
+        if (_wasInSmwBootstrapLoop && !inSmwBootstrapLoop && _controlFlowTraceRemaining > 0)
+        {
+            _logger.LogDebug(
+                "CPU left SMW bootstrap loop at ${Addr:X6}: A=${A:X4} X=${X:X4} Y=${Y:X4} SP=${SP:X4} DP=${DP:X4} P=${P:X2} E=${E}",
+                opcodeAddress, _state.C, _state.X, _state.Y, _state.SP, _state.DP, _state.P, _state.EmulationMode ? 1 : 0);
+            _controlFlowTraceRemaining--;
+        }
+        _wasInSmwBootstrapLoop = inSmwBootstrapLoop;
 
         bool executingFromWram = ((opcodeAddress >> 16) & 0xFF) is 0x7E or 0x7F;
         if (executingFromWram && !_wasExecutingFromWram && _wramExecutionTraceRemaining > 0)
