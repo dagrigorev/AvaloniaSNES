@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using SnesEmulator.Core;
+using SnesEmulator.Core.Models;
 using SnesEmulator.Emulation.Memory;
 using Xunit;
 
@@ -15,7 +16,7 @@ public sealed class MemoryBusTests
     {
         var wram = new WorkRam();
         wram.Reset();
-        var bus = new MemoryBus(wram, NullLogger<MemoryBus>.Instance);
+        var bus = new MemoryBus(wram, new TestInputManager(), NullLogger<MemoryBus>.Instance);
         bus.Reset();
         return bus;
     }
@@ -112,4 +113,32 @@ public sealed class MemoryBusTests
         bus.Reset();
         bus.Read(0x7E0000).Should().Be(0x00);
     }
+    [Fact]
+    public void CpuDivideRegisters_PreserveDividendForRemainder()
+    {
+        var bus = CreateBus();
+        bus.Write(0x004204, 0x34);
+        bus.Write(0x004205, 0x12); // dividend = 0x1234
+        bus.Write(0x004206, 0x10); // divisor = 16
+
+        bus.ReadWord(0x004214).Should().Be(0x0123);
+        bus.ReadWord(0x004216).Should().Be(0x0004);
+    }
+
+    [Fact]
+    public void ControllerPort_ReadsLatchedButtonStateSerially()
+    {
+        var wram = new WorkRam();
+        wram.Reset();
+        var input = new TestInputManager();
+        var bus = new MemoryBus(wram, input, NullLogger<MemoryBus>.Instance);
+        bus.Reset();
+
+        input.SetButtonState(1, SnesButton.B, true);
+        bus.Write(0x004016, 0x01);
+        bus.Write(0x004016, 0x00);
+
+        (bus.Read(0x004016) & 0x01).Should().Be(1);
+    }
+
 }

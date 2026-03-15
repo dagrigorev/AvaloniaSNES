@@ -9,6 +9,16 @@
         Background="{StaticResource BackgroundBrush}"
         WindowStartupLocation="CenterScreen">
 
+    <Window.KeyBindings>
+        <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenRomCommand}" />
+        <KeyBinding Gesture="F1" Command="{Binding RunCommand}" />
+        <KeyBinding Gesture="F2" Command="{Binding PauseCommand}" />
+        <KeyBinding Gesture="F3" Command="{Binding ResetCommand}" />
+        <KeyBinding Gesture="F5" Command="{Binding SaveStateCommand}" />
+        <KeyBinding Gesture="F6" Command="{Binding StepCommand}" />
+        <KeyBinding Gesture="F7" Command="{Binding LoadStateCommand}" />
+    </Window.KeyBindings>
+
     <DockPanel>
         <!-- ══ MENU BAR ══════════════════════════════════════════════════════ -->
         <Menu DockPanel.Dock="Top"
@@ -172,7 +182,7 @@
                         <!-- "No ROM" overlay -->
                         <StackPanel HorizontalAlignment="Center"
                                     VerticalAlignment="Center"
-                                    IsVisible="{Binding !IsRomLoaded}"
+                                    IsVisible="{Binding IsRomNotLoaded}"
                                     Spacing="12">
                             <TextBlock Text="SNES"
                                        FontSize="48"

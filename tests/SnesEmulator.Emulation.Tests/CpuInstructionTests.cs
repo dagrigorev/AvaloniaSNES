@@ -18,10 +18,6 @@ public sealed class CpuInstructionTests
     {
         var mem = new TestMemory();
         var bus = new FlatMemoryBus(mem);
-        var wram = new WorkRam();
-        wram.Reset();
-        var realBus = new MemoryBus(wram, NullLogger<MemoryBus>.Instance);
-
         var cpu = new Cpu65C816(bus, NullLogger<Cpu65C816>.Instance);
         return (cpu, mem);
     }

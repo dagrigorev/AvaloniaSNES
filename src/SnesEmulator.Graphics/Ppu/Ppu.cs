@@ -396,13 +396,16 @@ public sealed class Ppu : IPpu
 
         int charBase = GetBgCharBase(layer);
         // 4bpp: 32 bytes per tile (4 bytes per row)
-        int tileAddr = charBase + tileNum * 32 + tpy * 4;
-        if (tileAddr + 3 >= _vram.Length) return 0;
+        // 4bpp tile layout: 32 bytes total
+        // Bytes  0-15: bitplanes 0+1 (row Y at offset Y*2, Y*2+1)
+        // Bytes 16-31: bitplanes 2+3 (row Y at offset Y*2+16, Y*2+17)
+        int tileAddr = charBase + tileNum * 32 + tpy * 2;
+        if (tileAddr + 17 >= _vram.Length) return 0;
 
-        byte p0lo = _vram[tileAddr];
-        byte p0hi = _vram[tileAddr + 1];
-        byte p1lo = _vram[tileAddr + 16]; // Bitplanes 2+3 are offset by 16 bytes
-        byte p1hi = _vram[tileAddr + 17];
+        byte p0lo = _vram[tileAddr];          // bitplane 0, row tpy
+        byte p0hi = _vram[tileAddr + 1];      // bitplane 1, row tpy
+        byte p1lo = _vram[tileAddr + 16];     // bitplane 2, row tpy
+        byte p1hi = _vram[tileAddr + 17];     // bitplane 3, row tpy
 
         int shift = 7 - tpx;
         int colorIndex = ((p0lo >> shift) & 1)

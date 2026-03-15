@@ -66,10 +66,12 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
     public void LoadRom(string filePath)
     {
         EnsureNotRunning();
+        PersistMountedSram();
         _logger.LogInformation("Loading ROM: {Path}", filePath);
 
         RomData romData = _romLoader.LoadRom(filePath);
         _bus.LoadRom(romData);
+        _bus.LoadSram(GetSramPath(filePath));
         _bus.AttachDevices(Ppu, Apu);
         HardReset();
 
@@ -225,5 +227,23 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
             Directory.CreateDirectory(d);
     }
 
-    public void Dispose() { StopRunLoop(); _runCts?.Dispose(); }
+    private static string GetSramPath(string romPath)
+        => Path.ChangeExtension(romPath, ".srm");
+
+    private void PersistMountedSram()
+    {
+        if (_loadedRom is null)
+            return;
+
+        string path = GetSramPath(_loadedRom.FilePath);
+        EnsureDir(path);
+        _bus.SaveSram(path);
+    }
+
+    public void Dispose()
+    {
+        PersistMountedSram();
+        StopRunLoop();
+        _runCts?.Dispose();
+    }
 }

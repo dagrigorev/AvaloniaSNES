@@ -24,6 +24,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SnesEmulator.Emulation.Test
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SnesEmulator.Hardware.Tests", "tests\SnesEmulator.Hardware.Tests\SnesEmulator.Hardware.Tests.csproj", "{4BF2A3B4-C5D6-7890-4567-901234567890}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SnesEmulator.Rendering.Tests", "tests\SnesEmulator.Rendering.Tests\SnesEmulator.Rendering.Tests.csproj", "{5CF3A4B5-D6E7-8901-5678-901234567890}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -74,6 +76,10 @@ Global
 		{4BF2A3B4-C5D6-7890-4567-901234567890}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4BF2A3B4-C5D6-7890-4567-901234567890}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4BF2A3B4-C5D6-7890-4567-901234567890}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5CF3A4B5-D6E7-8901-5678-901234567890}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5CF3A4B5-D6E7-8901-5678-901234567890}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5CF3A4B5-D6E7-8901-5678-901234567890}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5CF3A4B5-D6E7-8901-5678-901234567890}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

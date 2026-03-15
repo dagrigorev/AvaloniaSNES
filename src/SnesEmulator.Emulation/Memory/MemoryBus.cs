@@ -19,6 +19,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 {
     private readonly ILogger<MemoryBus> _logger;
     private readonly WorkRam _wram;
+    private readonly IInputManager _inputManager;
 
     private IPpu? _ppu;
     private IApu? _apu;
@@ -40,14 +41,16 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private byte _wrio;       // $4201 — Joypad programmable I/O port
     private byte _wrmpya;     // $4202 — Multiplicand
     private byte _wrmpyb;     // $4203 — Multiplier
-    private ushort _rdmpy;    // $4216/17 — Multiply result
+    private ushort _rdmpy;    // $4216/17 — Multiply result / division remainder
     private ushort _rddiv;    // $4214/15 — Divide result
+    private ushort _wrdiva;   // $4204/05 — latched dividend for division
 
     public string Name => "MemoryBus";
 
-    public MemoryBus(WorkRam wram, ILogger<MemoryBus> logger)
+    public MemoryBus(WorkRam wram, IInputManager inputManager, ILogger<MemoryBus> logger)
     {
-        _wram   = wram;
+        _wram = wram;
+        _inputManager = inputManager;
         _logger = logger;
     }
 
@@ -78,6 +81,9 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _nmitimen        = 0;
         _nmiFlag         = false;
         _hvbjoy          = 0;
+        _wrdiva          = 0;
+        _rddiv           = 0;
+        _rdmpy           = 0;
         Array.Clear(_dmaRegisters);
         if (_loop is not null) _loop.NmiEnabled = false;
     }
@@ -111,22 +117,22 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
     public byte Read(uint address)
     {
-        byte   bank   = BitHelper.BankOf(address);
+        byte bank = BitHelper.BankOf(address);
         ushort offset = BitHelper.OffsetOf(address);
 
         if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))
         {
             return offset switch
             {
-                <= 0x1FFF                    => _wram.ReadDirect(offset),
-                >= 0x2100 and <= 0x213F      => ReadPpuRegister(offset),
-                >= 0x2140 and <= 0x2143      => ReadApuPort(offset),
-                0x2180                       => _wram.ReadWmData(),
-                >= 0x4000 and <= 0x41FF      => ReadController(offset),
-                >= 0x4200 and <= 0x421F      => ReadCpuRegister(offset),
-                >= 0x4300 and <= 0x43FF      => ReadDmaRegister(offset),
-                >= 0x8000                    => ReadRom(bank, offset),
-                _                            => OpenBus()
+                <= 0x1FFF               => _wram.ReadDirect(offset),
+                >= 0x2100 and <= 0x213F => ReadPpuRegister(offset),
+                >= 0x2140 and <= 0x2143 => ReadApuPort(offset),
+                0x2180                  => _wram.ReadWmData(),
+                >= 0x4000 and <= 0x41FF => ReadController(offset),
+                >= 0x4200 and <= 0x421F => ReadCpuRegister(offset),
+                >= 0x4300 and <= 0x43FF => ReadDmaRegister(offset),
+                >= 0x8000               => ReadRom(bank, offset),
+                _                       => TryReadSram(bank, offset)
             };
         }
 
@@ -136,29 +142,29 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         if ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0)
             return ReadRom(bank, offset);
 
-        return OpenBus();
+        return TryReadSram(bank, offset);
     }
 
     public void Write(uint address, byte value)
     {
-        byte   bank   = BitHelper.BankOf(address);
+        byte bank = BitHelper.BankOf(address);
         ushort offset = BitHelper.OffsetOf(address);
 
         if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))
         {
             switch (offset)
             {
-                case <= 0x1FFF:                  _wram.WriteDirect(offset, value);       break;
-                case >= 0x2100 and <= 0x213F:    WritePpuRegister(offset, value);        break;
-                case >= 0x2140 and <= 0x2143:    WriteApuPort(offset, value);            break;
-                case 0x2180:                     _wram.WriteWmData(value);               break;
-                case 0x2181:                     _wram.WriteWmAddressLow(value);         break;
-                case 0x2182:                     _wram.WriteWmAddressMid(value);         break;
-                case 0x2183:                     _wram.WriteWmAddressHigh(value);        break;
-                case >= 0x4000 and <= 0x41FF:    WriteController(offset, value);         break;
-                case >= 0x4200 and <= 0x421F:    WriteCpuRegister(offset, value);        break;
-                case >= 0x4300 and <= 0x43FF:    WriteDmaRegister(offset, value);        break;
-                default:                         TryWriteSram(bank, offset, value);      break;
+                case <= 0x1FFF:               _wram.WriteDirect(offset, value); break;
+                case >= 0x2100 and <= 0x213F: WritePpuRegister(offset, value); break;
+                case >= 0x2140 and <= 0x2143: WriteApuPort(offset, value); break;
+                case 0x2180:                  _wram.WriteWmData(value); break;
+                case 0x2181:                  _wram.WriteWmAddressLow(value); break;
+                case 0x2182:                  _wram.WriteWmAddressMid(value); break;
+                case 0x2183:                  _wram.WriteWmAddressHigh(value); break;
+                case >= 0x4000 and <= 0x41FF: WriteController(offset, value); break;
+                case >= 0x4200 and <= 0x421F: WriteCpuRegister(offset, value); break;
+                case >= 0x4300 and <= 0x43FF: WriteDmaRegister(offset, value); break;
+                default:                      TryWriteSram(bank, offset, value); break;
             }
             return;
         }
@@ -197,14 +203,39 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
     private byte ReadController(ushort offset) => offset switch
     {
-        0x4016 => (byte)(_controller1Data & 1),
-        0x4017 => (byte)((_controller2Data & 1) | 0x1C), // bits 2-4 always 1 on real HW
+        0x4016 => (byte)((ReadControllerSerial(1) ? 1 : 0) | 0x1C),
+        0x4017 => (byte)((ReadControllerSerial(2) ? 1 : 0) | 0x1C), // bits 2-4 are typically high on reads
         _      => OpenBus()
     };
 
+    private bool ReadControllerSerial(int port)
+    {
+        var controller = _inputManager.GetController(port);
+        if (_controllerLatch != 0)
+            controller.Strobe();
+
+        bool bit = controller.ReadSerial();
+        if (port == 1)
+            _controller1Data = (byte)(bit ? 1 : 0);
+        else
+            _controller2Data = (byte)(bit ? 1 : 0);
+
+        return bit;
+    }
+
     private void WriteController(ushort offset, byte value)
     {
-        if (offset == 0x4016) _controllerLatch = (byte)(value & 1);
+        if (offset != 0x4016)
+            return;
+
+        byte newLatch = (byte)(value & 1);
+        if (_controllerLatch == 1 && newLatch == 0)
+        {
+            _inputManager.GetController(1).Strobe();
+            _inputManager.GetController(2).Strobe();
+        }
+
+        _controllerLatch = newLatch;
     }
 
     private byte ReadCpuRegister(ushort offset)
@@ -226,10 +257,10 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             case 0x4215: return BitHelper.HighByte(_rddiv);
             case 0x4216: return BitHelper.LowByte(_rdmpy);
             case 0x4217: return BitHelper.HighByte(_rdmpy);
-            case 0x4218: return _controller1Data;
-            case 0x4219: return 0x00;
-            case 0x421A: return _controller2Data;
-            case 0x421B: return 0x00;
+            case 0x4218: return BitHelper.LowByte(_inputManager.GetController(1).ButtonState);
+            case 0x4219: return BitHelper.HighByte(_inputManager.GetController(1).ButtonState);
+            case 0x421A: return BitHelper.LowByte(_inputManager.GetController(2).ButtonState);
+            case 0x421B: return BitHelper.HighByte(_inputManager.GetController(2).ButtonState);
             default:     return OpenBus();
         }
     }
@@ -249,11 +280,20 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                 _wrmpyb = value;
                 _rdmpy  = (ushort)(_wrmpya * _wrmpyb);
                 break;
-            case 0x4204: _rddiv = (ushort)((_rddiv & 0xFF00) | value); break;
-            case 0x4205: _rddiv = (ushort)((_rddiv & 0x00FF) | (value << 8)); break;
+            case 0x4204: _wrdiva = (ushort)((_wrdiva & 0xFF00) | value); break;
+            case 0x4205: _wrdiva = (ushort)((_wrdiva & 0x00FF) | (value << 8)); break;
             case 0x4206: // WRDIVB — writing triggers divide
-                if (value == 0) { _rddiv = 0xFFFF; _rdmpy = (ushort)((_rddiv & 0xFF00) >> 8); }
-                else            { _rddiv = (ushort)(_rddiv / value); _rdmpy = (ushort)(_rddiv % value); }
+                if (value == 0)
+                {
+                    _rddiv = 0xFFFF;
+                    _rdmpy = _wrdiva;
+                }
+                else
+                {
+                    ushort dividend = _wrdiva;
+                    _rddiv = (ushort)(dividend / value);
+                    _rdmpy = (ushort)(dividend % value);
+                }
                 break;
             case 0x420B: ExecuteDma(value);         break;
             case 0x420C: /* HDMAEN stub */           break;
@@ -292,6 +332,15 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private static int MapHiRom(byte bank, ushort offset)
         => ((bank & 0x3F) * 0x10000) + offset;
 
+    private byte TryReadSram(byte bank, ushort offset)
+    {
+        if (_sram is null)
+            return OpenBus();
+
+        int off = ResolveSramOffset(bank, offset);
+        return off >= 0 && off < _sram.Length ? _sram[off] : OpenBus();
+    }
+
     private void TryWriteSram(byte bank, ushort offset, byte value)
     {
         if (_sram is null) return;
@@ -303,9 +352,10 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     {
         if (_rom?.MappingMode == RomMappingMode.LoRom && bank >= 0x70 && bank <= 0x7D)
             return ((bank - 0x70) * 0x8000) + (offset & 0x7FFF);
-        if (_rom?.MappingMode == RomMappingMode.HiRom && bank >= 0x20 && bank <= 0x3F
-            && offset is >= 0x6000 and <= 0x7FFF)
-            return ((bank - 0x20) * 0x2000) + (offset - 0x6000);
+        if (_rom?.MappingMode == RomMappingMode.HiRom && (
+                ((bank >= 0x20 && bank <= 0x3F) || (bank >= 0xA0 && bank <= 0xBF))
+                && offset is >= 0x6000 and <= 0x7FFF))
+            return (((bank & 0x1F)) * 0x2000) + (offset - 0x6000);
         return -1;
     }
 

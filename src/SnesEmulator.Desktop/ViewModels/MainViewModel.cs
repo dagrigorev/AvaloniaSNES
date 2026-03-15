@@ -69,9 +69,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
         private set
         {
             this.RaiseAndSetIfChanged(ref _isRomLoaded, value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsRomNotLoaded)));
             NotifyCommandsCanExecuteChanged();
         }
     }
+
+    public bool IsRomNotLoaded => !IsRomLoaded;
 
     private string _fpsDisplay = "0 FPS";
     public string FpsDisplay
@@ -181,6 +184,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             RomTitle  = $"⬤  {_emulator.LoadedRom?.Title ?? "Unknown"}";
             StatusText = $"Loaded: {Path.GetFileName(filePath)} ({_emulator.LoadedRom?.MappingMode})";
             IsRomLoaded = true;
+            ErrorMessage = string.Empty;
             HasError = false;
             _logger.LogInformation("ROM loaded: {File}", filePath);
         }
@@ -282,6 +286,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 EmulatorState.Error    => "Error",
                 _ => StatusText
             };
+
+            if (e.NewState is not EmulatorState.Error)
+            {
+                ErrorMessage = string.Empty;
+                HasError = false;
+            }
         });
     }
 

@@ -44,14 +44,10 @@ public sealed class App : Application
         {
             var mainVm = _serviceProvider.GetRequiredService<MainViewModel>();
             desktop.MainWindow = new MainWindow { DataContext = mainVm };
+            desktop.Exit += (_, _) => _serviceProvider?.Dispose();
         }
 
         base.OnFrameworkInitializationCompleted();
     }
 
-    //protected override void OnExit(ExitEventArgs e)
-    //{
-    //    _serviceProvider?.Dispose();
-    //    base.OnExit(e);
-    //}
 }
