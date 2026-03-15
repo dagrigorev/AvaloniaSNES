@@ -2,7 +2,6 @@ using Microsoft.Extensions.Logging;
 using SnesEmulator.Core.Interfaces;
 using SnesEmulator.Core.Models;
 using SnesEmulator.Core.Utilities;
-using SnesEmulator.Emulation.Timing;
 
 namespace SnesEmulator.Emulation.Memory;
 
@@ -10,8 +9,8 @@ namespace SnesEmulator.Emulation.Memory;
 /// The SNES memory bus.
 ///
 /// Key fixes in this version:
-///   - NMITIMEN ($4200) is tracked and forwarded to EmulationLoop.NmiEnabled
-///   - RDNMI ($4210) correctly returns VBlank flag and clears it on read
+///   - NMITIMEN ($4200) is tracked inside the bus as the single source of NMI truth
+///   - RDNMI ($4210) correctly returns a latched VBlank flag and clears it on read
 ///   - HVBJOY ($4212) correctly reflects VBlank/HBlank state
 ///   - WRIO ($4201) and WRMPYA/B ($4202/$4203) stubs added
 /// </summary>
@@ -23,7 +22,6 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
     private IPpu? _ppu;
     private IApu? _apu;
-    private EmulationLoop? _loop;  // needed to forward NMITIMEN writes
     private RomData? _rom;
     private byte[]? _sram;
 
@@ -71,9 +69,6 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _apu = apu;
     }
 
-    /// <summary>Attach the emulation loop so NMITIMEN writes can control NMI.</summary>
-    public void AttachLoop(EmulationLoop loop) => _loop = loop;
-
     public void LoadRom(RomData rom)
     {
         _rom  = rom;
@@ -106,7 +101,6 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _vblankTraceCount = 0;
         _nmiReadTraceCount = 0;
         Array.Clear(_dmaRegisters);
-        if (_loop is not null) _loop.NmiEnabled = false;
     }
 
     // ── VBlank notification from PPU (called each scanline) ──────────────────
@@ -265,7 +259,19 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private byte ReadPpuRegister(ushort offset)
-        => _ppu?.ReadRegister((byte)(offset - 0x2100)) ?? OpenBus();
+    {
+        byte value = _ppu?.ReadRegister((byte)(offset - 0x2100)) ?? OpenBus();
+
+        if (offset == 0x213F && _nmiReadTraceCount < 256)
+        {
+            _logger.LogDebug(
+                "CPU read STAT78 from ${Pbr:X2}:{Pc:X4} -> ${Val:X2} (frame {Frame}, scanline {Scanline})",
+                _lastCpuPbr, _lastCpuPc, value, _traceFrame, _traceScanline);
+            _nmiReadTraceCount++;
+        }
+
+        return value;
+    }
 
     private void WritePpuRegister(ushort offset, byte value)
     {
@@ -378,8 +384,6 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                         _lastCpuPbr, _lastCpuPc, value, _traceFrame, _traceScanline);
                     _ioTraceCount++;
                 }
-                if (_loop is not null)
-                    _loop.NmiEnabled = (value & 0x80) != 0;
                 break;
             case 0x4201: _wrio   = value; break;
             case 0x4202: _wrmpya = value; break;

@@ -36,6 +36,8 @@ public sealed class Cpu65C816 : ICpu
     private int _startupTraceRemaining;
     private int _wramExecutionTraceRemaining;
     private int _staLongXTraceRemaining;
+    private int _controlFlowTraceRemaining;
+    private bool _wasExecutingFromWram;
 
     public string Name => "65C816 CPU";
     public CpuRegisters Registers => _state.ToSnapshot();
@@ -63,6 +65,8 @@ public sealed class Cpu65C816 : ICpu
         _startupTraceRemaining = 128;
         _wramExecutionTraceRemaining = 64;
         _staLongXTraceRemaining = 128;
+        _controlFlowTraceRemaining = 128;
+        _wasExecutingFromWram = false;
 
         // Load reset vector from $FFFC (emulation mode, PBR=0)
         ushort resetVector = _bus.ReadWord(SnesConstants.EmuResetVector);
@@ -93,13 +97,22 @@ public sealed class Cpu65C816 : ICpu
         if (_bus is SnesEmulator.Emulation.Memory.MemoryBus traceBus)
             traceBus.SetCpuTraceContext(_state.PBR, _state.PC);
 
-        if (((opcodeAddress >> 16) & 0xFF) is 0x7E or 0x7F && _wramExecutionTraceRemaining > 0)
+        bool executingFromWram = ((opcodeAddress >> 16) & 0xFF) is 0x7E or 0x7F;
+        if (executingFromWram && !_wasExecutingFromWram && _wramExecutionTraceRemaining > 0)
+        {
+            _logger.LogDebug(
+                "CPU execution entered WRAM at ${Addr:X6}: A=${A:X4} X=${X:X4} Y=${Y:X4} SP=${SP:X4} DP=${DP:X4} P=${P:X2} E=${E}",
+                opcodeAddress, _state.C, _state.X, _state.Y, _state.SP, _state.DP, _state.P, _state.EmulationMode ? 1 : 0);
+            _wramExecutionTraceRemaining--;
+        }
+        if (executingFromWram && _wramExecutionTraceRemaining > 0)
         {
             _logger.LogDebug(
                 "CPU executing from WRAM at ${Addr:X6}: A=${A:X4} X=${X:X4} Y=${Y:X4} SP=${SP:X4} DP=${DP:X4} P=${P:X2} E=${E}",
                 opcodeAddress, _state.C, _state.X, _state.Y, _state.SP, _state.DP, _state.P, _state.EmulationMode ? 1 : 0);
             _wramExecutionTraceRemaining--;
         }
+        _wasExecutingFromWram = executingFromWram;
 
         byte opcode = _bus.Read(opcodeAddress);
         _state.PC++;
@@ -126,10 +139,22 @@ public sealed class Cpu65C816 : ICpu
     /// <inheritdoc />
     public void TriggerIrq() => _irqPending = true;
 
+    private void TraceControlFlow(string name, uint source, uint target)
+    {
+        if (_controlFlowTraceRemaining <= 0)
+            return;
+
+        _logger.LogDebug(
+            "CPU {Name}: ${Source:X6} -> ${Target:X6}  A=${A:X4} X=${X:X4} Y=${Y:X4} SP=${SP:X4} DP=${DP:X4} P=${P:X2} E=${E}",
+            name, source, target, _state.C, _state.X, _state.Y, _state.SP, _state.DP, _state.P, _state.EmulationMode ? 1 : 0);
+        _controlFlowTraceRemaining--;
+    }
+
     // ── Interrupt Handlers ────────────────────────────────────────────────────
 
     private int ServiceNmi()
     {
+        uint source = _state.FullPC;
         PushPC();
         PushP();
         _state.FlagI = true;
@@ -142,7 +167,7 @@ public sealed class Cpu65C816 : ICpu
         _state.PC = _bus.ReadWord(vector);
         _state.PBR = 0;
 
-        _logger.LogDebug("NMI serviced, jumping to ${PC:X4}", _state.PC);
+        _logger.LogDebug("NMI serviced, jumping to ${PC:X4} from ${Source:X6}", _state.PC, source);
         return 8 * SnesConstants.CpuSlowCycles;
     }
 
@@ -1164,38 +1189,45 @@ public sealed class Cpu65C816 : ICpu
     private int Op_BVS() => Branch(_state.FlagV);
     private int Op_BVC() => Branch(!_state.FlagV);
     private int Op_BRA() => Branch(true); // Always branch
-    private int Op_BRL() { uint target = _addr.RelativeLong(); _state.PC = BitHelper.OffsetOf(target); return 4; }
+    private int Op_BRL() { uint source = _state.FullPC - 1; uint target = _addr.RelativeLong(); TraceControlFlow("BRL", source, target); _state.PC = BitHelper.OffsetOf(target); return 4; }
 
     // ── Jump / Call ───────────────────────────────────────────────────────────
 
-    private int Op_JMP_Absolute()          { _state.PC = BitHelper.OffsetOf(_addr.Absolute());           return 3; }
-    private int Op_JMP_AbsoluteIndirect()  { _state.PC = BitHelper.OffsetOf(_addr.AbsoluteIndirect());   return 5; }
-    private int Op_JMP_AbsoluteIndirectX() { _state.PC = BitHelper.OffsetOf(_addr.AbsoluteIndirectX());  return 6; }
-    private int Op_JML_AbsoluteLong()      { uint a = _addr.AbsoluteLong(); _state.PBR = BitHelper.BankOf(a); _state.PC = BitHelper.OffsetOf(a); return 4; }
-    private int Op_JML_AbsoluteIndirectLong() { uint a = _addr.AbsoluteIndirectLong(); _state.PBR = BitHelper.BankOf(a); _state.PC = BitHelper.OffsetOf(a); return 6; }
+    private int Op_JMP_Absolute()          { uint source = _state.FullPC - 1; uint target = _addr.Absolute(); TraceControlFlow("JMP", source, (uint)((_state.PBR << 16) | BitHelper.OffsetOf(target))); _state.PC = BitHelper.OffsetOf(target);           return 3; }
+    private int Op_JMP_AbsoluteIndirect()  { uint source = _state.FullPC - 1; uint target = _addr.AbsoluteIndirect(); TraceControlFlow("JMP (abs)", source, (uint)((_state.PBR << 16) | BitHelper.OffsetOf(target))); _state.PC = BitHelper.OffsetOf(target);   return 5; }
+    private int Op_JMP_AbsoluteIndirectX() { uint source = _state.FullPC - 1; uint target = _addr.AbsoluteIndirectX(); TraceControlFlow("JMP (abs,X)", source, (uint)((_state.PBR << 16) | BitHelper.OffsetOf(target))); _state.PC = BitHelper.OffsetOf(target);  return 6; }
+    private int Op_JML_AbsoluteLong()      { uint source = _state.FullPC - 1; uint a = _addr.AbsoluteLong(); TraceControlFlow("JML", source, a); _state.PBR = BitHelper.BankOf(a); _state.PC = BitHelper.OffsetOf(a); return 4; }
+    private int Op_JML_AbsoluteIndirectLong() { uint source = _state.FullPC - 1; uint a = _addr.AbsoluteIndirectLong(); TraceControlFlow("JML [abs]", source, a); _state.PBR = BitHelper.BankOf(a); _state.PC = BitHelper.OffsetOf(a); return 6; }
 
     private int Op_JSR_Absolute()
     {
+        uint source = _state.FullPC - 1;
         ushort target = FetchWord();
+        TraceControlFlow("JSR", source, (uint)((_state.PBR << 16) | target));
         PushWord((ushort)(_state.PC - 1));
         _state.PC = target;
         return 6;
     }
     private int Op_JSR_AbsoluteIndirectX()
     {
+        uint source = _state.FullPC - 1;
         uint target = _addr.AbsoluteIndirectX();
+        TraceControlFlow("JSR (abs,X)", source, (uint)((_state.PBR << 16) | BitHelper.OffsetOf(target)));
         PushWord((ushort)(_state.PC - 1));
         _state.PC = BitHelper.OffsetOf(target);
         return 8;
     }
     private int Op_JSL_AbsoluteLong()
     {
+        uint source = _state.FullPC - 1;
         // Long operands are encoded little-endian as: low, high, bank.
         // Reading bank first jumps into garbage for real ROM startup code.
         byte lo   = _addr.FetchByte();
         byte hi   = _addr.FetchByte();
         byte bank = _addr.FetchByte();
         ushort off = BitHelper.MakeWord(lo, hi);
+        uint target = (uint)(off | (bank << 16));
+        TraceControlFlow("JSL", source, target);
         Push(_state.PBR);
         PushWord((ushort)(_state.PC - 1));
         _state.PBR = bank;
@@ -1205,22 +1237,28 @@ public sealed class Cpu65C816 : ICpu
 
     private int Op_RTS()
     {
+        uint source = _state.FullPC - 1;
         _state.PC = (ushort)(PopWord() + 1);
+        TraceControlFlow("RTS", source, (uint)((_state.PBR << 16) | _state.PC));
         return 6;
     }
     private int Op_RTL()
     {
+        uint source = _state.FullPC - 1;
         ushort pc  = PopWord();
         byte   bank = Pop();
         _state.PC  = (ushort)(pc + 1);
         _state.PBR = bank;
+        TraceControlFlow("RTL", source, _state.FullPC);
         return 6;
     }
     private int Op_RTI()
     {
+        uint source = _state.FullPC - 1;
         _state.P = Pop();
         _state.PC = PopWord();
         if (!_state.EmulationMode) _state.PBR = Pop();
+        TraceControlFlow("RTI", source, _state.FullPC);
         return _state.EmulationMode ? 6 : 7;
     }
 

@@ -59,8 +59,6 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
         _saveState    = saveState;
         _inputManager = inputManager;
 
-        // Wire the loop to the bus so NMITIMEN writes reach the loop
-        _bus.AttachLoop(_loop);
     }
 
     public void LoadRom(string filePath)

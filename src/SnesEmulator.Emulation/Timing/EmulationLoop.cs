@@ -36,8 +36,6 @@ public sealed class EmulationLoop
     private int _currentScanline;
     private int _currentScanlineMasterCycles;
 
-    public bool NmiEnabled { get; set; } = false;
-
     public EmulationLoop(ICpu cpu, IPpu ppu, IApu apu, MemoryBus bus,
                          ILogger<EmulationLoop> logger)
     {
@@ -50,7 +48,6 @@ public sealed class EmulationLoop
 
     public void Reset()
     {
-        NmiEnabled = false;
         _currentFrame = 0;
         _currentScanline = 0;
         _currentScanlineMasterCycles = 0;
@@ -75,7 +72,7 @@ public sealed class EmulationLoop
     {
         ApplyScanlineState();
 
-        if (NmiEnabled && _bus.ConsumeNmi())
+        if (_bus.ConsumeNmi())
             _cpu.TriggerNmi();
 
         int cpuCycles    = _cpu.Step();
