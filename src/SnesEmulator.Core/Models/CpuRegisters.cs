@@ -50,7 +50,7 @@ public sealed record CpuRegisters
     public byte P { get; init; }
 
     /// <summary>Emulation mode flag. When true, CPU behaves like 6502.</summary>
-    public bool EmulationMode { get; init; }
+    public bool EmulationMode { get; set; }
 
     // ── Status flag accessors ────────────────────────────────────────────────
     /// <summary>Negative flag (bit 7).</summary>

@@ -266,6 +266,73 @@ public sealed class CpuInstructionTests
         cpu.Registers.FlagZ.Should().BeTrue();
     }
 
+    [Fact]
+    public void TSB_DirectPage_SetsMemoryBits_AndSetsZeroFromOverlap()
+    {
+        var (cpu, mem) = CreateCpu();
+        mem[0x0010] = 0x0F;
+        mem[0x8000] = 0xA9; // LDA #$F0
+        mem[0x8001] = 0xF0;
+        mem[0x8002] = 0x04; // TSB $10
+        mem[0x8003] = 0x10;
+        mem[0xFFFC] = 0x00;
+        mem[0xFFFD] = 0x80;
+
+        cpu.Reset();
+        cpu.Step();
+        cpu.Step();
+
+        mem[0x0010].Should().Be(0xFF);
+        cpu.Registers.FlagZ.Should().BeTrue();
+    }
+
+    [Fact]
+    public void TRB_Absolute_ClearsMemoryBits_AndLeavesOtherBits()
+    {
+        var (cpu, mem) = CreateCpu();
+        mem[0x1234] = 0b1111_0011;
+        mem[0x8000] = 0xA9; // LDA #$0F
+        mem[0x8001] = 0x0F;
+        mem[0x8002] = 0x1C; // TRB $1234
+        mem[0x8003] = 0x34;
+        mem[0x8004] = 0x12;
+        mem[0xFFFC] = 0x00;
+        mem[0xFFFD] = 0x80;
+
+        cpu.Reset();
+        cpu.Step();
+        cpu.Step();
+
+        mem[0x1234].Should().Be(0b1111_0000);
+        cpu.Registers.FlagZ.Should().BeFalse();
+    }
+
+    //[Fact]
+    //public void StackRelative_Cmp_UsesStackBasedAddress()
+    //{
+    //    var (cpu, mem) = CreateCpu();
+    //    cpu.Reset();
+    //    cpu.Registers.EmulationMode = false;
+    //    cpu.Registers.FlagM = true;
+    //    cpu.Registers.FlagX = true;
+    //    cpu.Registers.SP = 0x01F0;
+
+    //    mem[0x01F5] = 0x44;
+    //    mem[0x8000] = 0xA9; // LDA #$44
+    //    mem[0x8001] = 0x44;
+    //    mem[0x8002] = 0xC3; // CMP 5,S
+    //    mem[0x8003] = 0x05;
+    //    mem[0xFFFC] = 0x00;
+    //    mem[0xFFFD] = 0x80;
+    //    cpu.Registers.PC = 0x8000;
+
+    //    cpu.Step();
+    //    cpu.Step();
+
+    //    cpu.Registers.FlagZ.Should().BeTrue();
+    //    cpu.Registers.FlagC.Should().BeTrue();
+    //}
+
     // ── NOP cycles ────────────────────────────────────────────────────────────
 
     [Fact]

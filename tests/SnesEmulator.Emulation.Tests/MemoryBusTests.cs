@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using SnesEmulator.Core;
+using SnesEmulator.Core.Interfaces;
 using SnesEmulator.Core.Models;
 using SnesEmulator.Emulation.Memory;
 using Xunit;
@@ -141,4 +142,145 @@ public sealed class MemoryBusTests
         (bus.Read(0x004016) & 0x01).Should().Be(1);
     }
 
+    [Fact]
+    public void Rdnmi_ReadClearsLatch_AndNmiPendsOnlyOnVblankEdge()
+    {
+        var bus = CreateBus();
+
+        bus.Write(0x004200, 0x80); // enable NMI
+        bus.SetVBlankState(false, 0, 224);
+        bus.SetVBlankState(true, 0, 225);
+
+        bus.ConsumeNmi().Should().BeTrue();
+        bus.ConsumeNmi().Should().BeFalse();
+
+        bus.Read(0x004210).Should().Be(0x82);
+        bus.Read(0x004210).Should().Be(0x02);
+
+        bus.SetVBlankState(true, 0, 226);
+        bus.ConsumeNmi().Should().BeFalse();
+    }
+
+    [Fact]
+    public void Hvbjoy_ReflectsCurrentVblankAndHblankBits()
+    {
+        var bus = CreateBus();
+
+        bus.SetHvBjoy(inVBlank: false, inHBlank: false);
+        bus.Read(0x004212).Should().Be(0x00);
+
+        bus.SetHvBjoy(inVBlank: false, inHBlank: true);
+        bus.Read(0x004212).Should().Be(0x40);
+
+        bus.SetHvBjoy(inVBlank: true, inHBlank: false);
+        bus.Read(0x004212).Should().Be(0x80);
+
+        bus.SetHvBjoy(inVBlank: true, inHBlank: true);
+        bus.Read(0x004212).Should().Be(0xC0);
+    }
+
+    [Fact]
+    public void Dma_Mode1_AlternatesBetweenVramLowAndHigh_AndAdvancesSourceRegisters()
+    {
+        var wram = new WorkRam();
+        wram.Reset();
+        var ppu = new RecordingPpu();
+        var bus = new MemoryBus(wram, new TestInputManager(), NullLogger<MemoryBus>.Instance);
+        bus.AttachDevices(ppu, new StubApu());
+        bus.Reset();
+
+        bus.Write(0x7E1000, 0x11);
+        bus.Write(0x7E1001, 0x22);
+        bus.Write(0x7E1002, 0x33);
+        bus.Write(0x7E1003, 0x44);
+
+        bus.Write(0x004300, 0x01); // mode 1, CPU->PPU, increment source
+        bus.Write(0x004301, 0x18); // $2118/$2119
+        bus.Write(0x004302, 0x00);
+        bus.Write(0x004303, 0x10);
+        bus.Write(0x004304, 0x7E);
+        bus.Write(0x004305, 0x04);
+        bus.Write(0x004306, 0x00);
+
+        bus.Write(0x00420B, 0x01);
+
+        ppu.Writes.Should().ContainInOrder(
+            (0x18, (byte)0x11),
+            (0x19, (byte)0x22),
+            (0x18, (byte)0x33),
+            (0x19, (byte)0x44));
+
+        bus.Read(0x004302).Should().Be(0x04);
+        bus.Read(0x004303).Should().Be(0x10);
+        bus.Read(0x004304).Should().Be(0x7E);
+        bus.Read(0x004305).Should().Be(0x00);
+        bus.Read(0x004306).Should().Be(0x00);
+    }
+
+    [Fact]
+    public void Dma_ToWramPort_UsesUpdatedSourceOnSecondTrigger()
+    {
+        var wram = new WorkRam();
+        wram.Reset();
+        var bus = new MemoryBus(wram, new TestInputManager(), NullLogger<MemoryBus>.Instance);
+        bus.AttachDevices(new RecordingPpu(), new StubApu());
+        bus.Reset();
+
+        bus.Write(0x7E2000, 0xA1);
+        bus.Write(0x7E2001, 0xA2);
+        bus.Write(0x7E2002, 0xA3);
+        bus.Write(0x7E2003, 0xA4);
+
+        bus.Write(0x004300, 0x00); // mode 0
+        bus.Write(0x004301, 0x80); // $2180 WMDATA port
+        bus.Write(0x004302, 0x00);
+        bus.Write(0x004303, 0x20);
+        bus.Write(0x004304, 0x7E);
+        bus.Write(0x004305, 0x02);
+        bus.Write(0x004306, 0x00);
+        bus.Write(0x002181, 0x00);
+        bus.Write(0x002182, 0x30);
+        bus.Write(0x002183, 0x00);
+
+        bus.Write(0x00420B, 0x01);
+
+        bus.Write(0x004305, 0x02);
+        bus.Write(0x004306, 0x00);
+        bus.Write(0x00420B, 0x01);
+
+        bus.Read(0x7E3000).Should().Be(0xA1);
+        bus.Read(0x7E3001).Should().Be(0xA2);
+        bus.Read(0x7E3002).Should().Be(0xA3);
+        bus.Read(0x7E3003).Should().Be(0xA4);
+    }
+
+}
+
+internal sealed class RecordingPpu : IPpu
+{
+    public List<(byte reg, byte value)> Writes { get; } = new();
+    public PpuStatus Status => new();
+    public bool IsVBlank => false;
+    public bool IsHBlank => false;
+    public IFrameBuffer FrameBuffer => throw new NotSupportedException();
+    public event EventHandler<FrameReadyEventArgs>? FrameReady;
+    public string Name => "RecordingPPU";
+    public void Reset() { }
+    public void Clock(int masterCycles) { }
+    public byte ReadRegister(byte register) => 0;
+    public void WriteRegister(byte register, byte value) => Writes.Add((register, value));
+    public byte[] SaveState() => Array.Empty<byte>();
+    public void LoadState(byte[] state) { }
+}
+
+internal sealed class StubApu : IApu
+{
+    public string Name => "StubAPU";
+    public void Reset() { }
+    public void Clock(int masterCycles) { }
+    public byte ReadPort(byte port) => 0;
+    public void WritePort(byte port, byte value) { }
+    public void FillAudioBuffer(short[] buffer, int offset, int count) { }
+    public byte[] SaveState() => Array.Empty<byte>();
+    public void LoadState(byte[] state) { }
 }

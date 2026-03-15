@@ -140,6 +140,8 @@ public sealed class Ppu : IPpu
         _cgadd = 0;
         _oamPointer = 0;
         _frameBuffer.Clear();
+        _stat77 = 0;
+        _stat78 = 0x01;
         _logger.LogDebug("PPU reset.");
     }
 
@@ -474,7 +476,7 @@ public sealed class Ppu : IPpu
             0x3C => 0x00,   // OPHCT (H counter)
             0x3D => 0x00,   // OPVCT (V counter)
             0x3E => _stat77,
-            0x3F => (byte)(_frameCount & 0xFF),
+            0x3F => _stat78,
             _ => 0xFF
         };
     }

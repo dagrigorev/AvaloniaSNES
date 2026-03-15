@@ -493,12 +493,16 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             int    byteCount    = _dmaRegisters[ch, 5] | (_dmaRegisters[ch, 6] << 8);
             if (byteCount == 0) byteCount = 0x10000;
 
-            bool noIncrement = (control & 0x08) != 0;
+            bool fixedSource = (control & 0x08) != 0;
             bool decrement   = (control & 0x10) != 0;
+            bool reverse     = (control & 0x80) != 0;
             int  transferMode = control & 0x07;
 
-            _logger.LogDebug("DMA ch{Ch}: {Count} bytes from {Src:X6} → $21{Reg:X2} mode={Mode}",
-                ch, byteCount, srcAddr, destReg, transferMode);
+            int remaining = byteCount;
+
+            _logger.LogDebug(
+                "DMA ch{Ch}: {Count} bytes from {Src:X6} → $21{Reg:X2} mode={Mode} fixed={Fixed} dec={Dec} rev={Rev}",
+                ch, byteCount, srcAddr, destReg, transferMode, fixedSource ? 1 : 0, decrement ? 1 : 0, reverse ? 1 : 0);
 
             // Transfer mode determines how destination address increments:
             // 0: write all bytes to destReg            (1-byte)
@@ -508,26 +512,61 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             // 4: four consecutive registers            (rarely used)
             for (int i = 0; i < byteCount; i++)
             {
-                byte data = Read(srcAddr);
+                byte regOffset = GetDmaDestinationOffset(transferMode, i);
+                uint bBusAddress = (uint)(0x2100 | destReg | regOffset);
 
-                byte regOffset = transferMode switch
+                if (!reverse)
                 {
-                    1 => (byte)(i & 1),           // alternate: 0,1,0,1,...
-                    3 => (byte)((i >> 1) & 1),    // pairs: 0,0,1,1,0,0,1,1,...
-                    4 => (byte)(i & 3),            // sequential: 0,1,2,3,0,1,2,3,...
-                    _ => 0                         // modes 0,2: always same register
-                };
+                    byte data = Read(srcAddr);
+                    Write(bBusAddress, data);
+                }
+                else
+                {
+                    byte data = Read(bBusAddress);
+                    Write(srcAddr, data);
+                }
 
-                Write((uint)(0x2100 | destReg | regOffset), data);
-
-                if (!noIncrement)
+                if (!fixedSource)
                 {
                     if (decrement) srcAddr--;
                     else           srcAddr++;
                 }
+
+                remaining--;
+            }
+
+            // Real hardware updates DMA address/count registers as the transfer runs.
+            // Some games immediately trigger the same channel again and expect the
+            // next transfer to continue from the updated source pointer.
+            _dmaRegisters[ch, 2] = (byte)(srcAddr & 0xFF);
+            _dmaRegisters[ch, 3] = (byte)((srcAddr >> 8) & 0xFF);
+            _dmaRegisters[ch, 4] = (byte)((srcAddr >> 16) & 0xFF);
+            _dmaRegisters[ch, 5] = (byte)(remaining & 0xFF);
+            _dmaRegisters[ch, 6] = (byte)((remaining >> 8) & 0xFF);
+
+            if (_ioTraceCount < 512)
+            {
+                _logger.LogDebug(
+                    "DMA ch{Ch} done: nextSrc={Src:X6} remaining={Remaining:X4}",
+                    ch, srcAddr, remaining & 0xFFFF);
+                _ioTraceCount++;
             }
         }
     }
+
+    private static byte GetDmaDestinationOffset(int transferMode, int index)
+        => transferMode switch
+        {
+            0 => 0,
+            1 => (byte)(index & 1),
+            2 => 0,
+            3 => (byte)((index >> 1) & 1),
+            4 => (byte)(index & 3),
+            5 => (byte)(index & 1),
+            6 => 0,
+            7 => (byte)((index >> 1) & 1),
+            _ => 0
+        };
 
     private static byte OpenBus() => 0xFF;
 

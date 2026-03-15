@@ -28,6 +28,7 @@ public sealed class EmulationLoop
     private readonly ILogger<EmulationLoop> _logger;
 
     private const int MasterCyclesPerScanline = 1364;  // 341 dots × 4
+    private const int HBlankStartMasterCycle  = 274 * 4;
     private const int ScanlinesPerFrame       = 262;
     private const int VBlankStartScanline     = 225;
     private const int CpuCyclesMultiplier     = SnesConstants.CpuSlowCycles;
@@ -87,8 +88,7 @@ public sealed class EmulationLoop
     private void ApplyScanlineState()
     {
         bool inVBlank = _currentScanline >= VBlankStartScanline;
-        // Use a wider synthetic HBlank window so ROMs polling $4212 do not miss it between CPU steps.
-        bool inHBlank = _currentScanlineMasterCycles >= (MasterCyclesPerScanline - 256);
+        bool inHBlank = _currentScanlineMasterCycles >= HBlankStartMasterCycle;
         _bus.SetHvBjoy(inVBlank, inHBlank);
         _bus.SetVBlankState(inVBlank, _currentFrame, _currentScanline);
     }
