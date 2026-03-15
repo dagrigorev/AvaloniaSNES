@@ -90,8 +90,6 @@ public sealed class Ppu : IPpu
 
     // CGRAM write latch
     private byte _cgramLatch;
-    private int _vramWriteTraceRemaining = 64;
-    private int _cgramWriteTraceRemaining = 64;
     private bool _cgramHighByte;
 
     // OAM internal pointer
@@ -142,8 +140,6 @@ public sealed class Ppu : IPpu
         _cgadd = 0;
         _oamPointer = 0;
         _frameBuffer.Clear();
-        _vramWriteTraceRemaining = 64;
-        _cgramWriteTraceRemaining = 64;
         _logger.LogDebug("PPU reset.");
     }
 
@@ -553,27 +549,15 @@ public sealed class Ppu : IPpu
 
     private void WriteVramLow(byte value)
     {
-        int wordAddr = GetVramAddress();
-        int addr = wordAddr * 2;
+        int addr = GetVramAddress() * 2;
         if (addr < _vram.Length) _vram[addr] = value;
-        if (_vramWriteTraceRemaining > 0 && value != 0)
-        {
-            _logger.LogDebug("PPU VRAM write low: VMADD=${Vmadd:X4} addr=${Addr:X4} value=${Val:X2}", _vmadd, addr, value);
-            _vramWriteTraceRemaining--;
-        }
         if ((_vmain & 0x80) == 0) IncrementVramAddress(); // Increment on low write if bit7=0
     }
 
     private void WriteVramHigh(byte value)
     {
-        int wordAddr = GetVramAddress();
-        int addr = wordAddr * 2 + 1;
+        int addr = GetVramAddress() * 2 + 1;
         if (addr < _vram.Length) _vram[addr] = value;
-        if (_vramWriteTraceRemaining > 0 && value != 0)
-        {
-            _logger.LogDebug("PPU VRAM write high: VMADD=${Vmadd:X4} addr=${Addr:X4} value=${Val:X2}", _vmadd, addr, value);
-            _vramWriteTraceRemaining--;
-        }
         if ((_vmain & 0x80) != 0) IncrementVramAddress(); // Increment on high write if bit7=1
     }
 
@@ -654,12 +638,6 @@ public sealed class Ppu : IPpu
         {
             if (addr < _cgram.Length)     _cgram[addr]     = _cgramLatch;
             if (addr + 1 < _cgram.Length) _cgram[addr + 1] = (byte)(value & 0x7F);
-            if (_cgramWriteTraceRemaining > 0 && ((_cgramLatch | value) != 0))
-            {
-                ushort color = (ushort)(_cgramLatch | ((value & 0x7F) << 8));
-                _logger.LogDebug("PPU CGRAM write: CGADD=${Cgadd:X2} addr=${Addr:X3} color=${Color:X4}", _cgadd, addr, color);
-                _cgramWriteTraceRemaining--;
-            }
             _cgramHighByte = false;
             _cgadd++;
         }

@@ -87,7 +87,8 @@ public sealed class EmulationLoop
     private void ApplyScanlineState()
     {
         bool inVBlank = _currentScanline >= VBlankStartScanline;
-        bool inHBlank = _currentScanlineMasterCycles >= MasterCyclesPerScanline - 4;
+        // Use a wider synthetic HBlank window so ROMs polling $4212 do not miss it between CPU steps.
+        bool inHBlank = _currentScanlineMasterCycles >= (MasterCyclesPerScanline - 256);
         _bus.SetHvBjoy(inVBlank, inHBlank);
         _bus.SetVBlankState(inVBlank, _currentFrame, _currentScanline);
     }
