@@ -480,12 +480,21 @@ public sealed class Ppu : IPpu
     {
         switch (reg)
         {
-            case 0x00: _inidisp = value; break;
+            case 0x00:
+                if (_inidisp != value)
+                    _logger.LogDebug("INIDISP: ${Old:X2} → ${New:X2} ({State})",
+                        _inidisp, value, (value & 0x80) != 0 ? "BLANKED" : $"ON brightness={value & 0x0F}");
+                _inidisp = value;
+                break;
             case 0x01: _obsel = value; break;
             case 0x02: _oamadd = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); break;
             case 0x03: _oamaddh = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); break;
             case 0x04: WriteOam(value); break;
-            case 0x05: _bgmode = value; break;
+            case 0x05:
+                if (_bgmode != value)
+                    _logger.LogDebug("BGMODE: ${Old:X2} → ${New:X2} (Mode {Mode})", _bgmode, value, value & 7);
+                _bgmode = value;
+                break;
             case 0x06: _mosaic = value; break;
             case 0x07: _bg1sc[0] = value; break;
             case 0x08: _bg2sc[0] = value; break;
@@ -518,7 +527,11 @@ public sealed class Ppu : IPpu
             case 0x29: _wh3 = value; break;
             case 0x2A: _wbglog = value; break;
             case 0x2B: _wobjlog = value; break;
-            case 0x2C: _tm = value; break;
+            case 0x2C:
+                if (_tm != value)
+                    _logger.LogDebug("TM (main screen): ${Old:X2} → ${New:X2}", _tm, value);
+                _tm = value;
+                break;
             case 0x2D: _ts = value; break;
             case 0x2E: _tmw = value; break;
             case 0x2F: _tsw = value; break;

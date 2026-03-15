@@ -9,11 +9,8 @@ using SnesEmulator.Desktop.ViewModels;
 namespace SnesEmulator.Desktop.Controls;
 
 /// <summary>
-/// Custom Avalonia control that renders the SNES PPU framebuffer.
-///
-/// The PPU raises FrameReady with ARGB32 pixel data on the emulation thread.
-/// This control converts that to a WriteableBitmap and paints it scaled to
-/// fit the control, maintaining the SNES native 8:7 (approx 4:3) aspect ratio.
+/// Renders the SNES PPU framebuffer into the Avalonia window.
+/// Pixel format: emulator produces ARGB32, Avalonia Bgra8888 wants B,G,R,A in memory.
 /// </summary>
 public sealed class GameScreen : Control
 {
@@ -24,30 +21,16 @@ public sealed class GameScreen : Control
     private readonly object  _bitmapLock = new();
     private volatile bool    _hasFrame;
 
-    // ── Attach to ViewModel's Emulator ────────────────────────────────────────
+    public void AttachToViewModel(MainViewModel vm) => vm.AttachGameScreen(this);
 
-    /// <summary>
-    /// Wires the GameScreen to the emulator's PPU FrameReady event.
-    /// The ViewModel exposes the emulator's PPU directly.
-    /// </summary>
-    public void AttachToViewModel(MainViewModel vm)
-    {
-        vm.AttachGameScreen(this);
-    }
-
-    /// <summary>Called by MainViewModel to subscribe to PPU frames.</summary>
     public void SubscribeToPpu(Core.Interfaces.IPpu ppu)
-    {
-        ppu.FrameReady += OnFrameReady;
-    }
+        => ppu.FrameReady += OnFrameReady;
 
     private void OnFrameReady(object? sender, FrameReadyEventArgs e)
     {
         UpdateBitmap(e.Pixels, e.Width, e.Height);
         _hasFrame = true;
-
-        // Use Send instead of Post to ensure it actually runs
-        Dispatcher.UIThread.InvokeAsync(InvalidateVisual, DispatcherPriority.Render);
+        Dispatcher.UIThread.Post(InvalidateVisual, DispatcherPriority.Render);
     }
 
     private void UpdateBitmap(IReadOnlyList<uint> pixels, int width, int height)
@@ -68,50 +51,46 @@ public sealed class GameScreen : Control
             using var fb = _bitmap.Lock();
             unsafe
             {
-                uint* ptr = (uint*)fb.Address;
+                uint* dst = (uint*)fb.Address;
                 for (int i = 0; i < pixels.Count; i++)
                 {
-                    // Convert ARGB (emulator) → BGRA (Avalonia Bgra8888)
+                    // Emulator pixel: 0xAARRGGBB
+                    // Avalonia Bgra8888 in memory layout: B G R A (little-endian uint = 0xAARRGGBB)
+                    // So actually no swap needed — Bgra8888 stores as uint32 ARGB on little-endian
                     uint argb = pixels[i];
                     uint a = (argb >> 24) & 0xFF;
                     uint r = (argb >> 16) & 0xFF;
                     uint g = (argb >>  8) & 0xFF;
-                    uint b = argb         & 0xFF;
-                    ptr[i] = (a << 24) | (r << 16) | (g << 8) | b;
-                    // Note: Avalonia's Bgra8888 is actually stored as B,G,R,A in memory
-                    // but the PixelFormat name refers to logical channel order.
-                    // The above maps ARGB → BGRA correctly for display.
+                    uint b =  argb        & 0xFF;
+                    // Bgra8888: byte order in memory = B, G, R, A
+                    // As uint32 little-endian: A<<24 | R<<16 | G<<8 | B
+                    dst[i] = (a << 24) | (r << 16) | (g << 8) | b;
                 }
             }
         }
     }
 
-    // ── Avalonia rendering ────────────────────────────────────────────────────
-
     public override void Render(DrawingContext context)
     {
-        var bounds = new Rect(Bounds.Size);
-        context.FillRectangle(Brushes.Black, bounds);
+        context.FillRectangle(Brushes.Black, new Rect(Bounds.Size));
 
         if (!_hasFrame) return;
 
-        WriteableBitmap? bitmap;
-        lock (_bitmapLock) bitmap = _bitmap;
-        if (bitmap is null) return;
+        WriteableBitmap? bmp;
+        lock (_bitmapLock) bmp = _bitmap;
+        if (bmp is null) return;
 
-        // Scale to fill available space, maintaining 8:7 pixel aspect ratio
         double scaleX = Bounds.Width  / SnesWidth;
         double scaleY = Bounds.Height / SnesHeight;
         double scale  = Math.Min(scaleX, scaleY);
 
-        double drawW = SnesWidth  * scale;
-        double drawH = SnesHeight * scale;
-        double ox    = (Bounds.Width  - drawW) / 2;
-        double oy    = (Bounds.Height - drawH) / 2;
+        double w  = SnesWidth  * scale;
+        double h  = SnesHeight * scale;
+        double ox = (Bounds.Width  - w) / 2;
+        double oy = (Bounds.Height - h) / 2;
 
-        var destRect = new Rect(ox, oy, drawW, drawH);
-        var srcRect  = new Rect(0, 0, SnesWidth, SnesHeight);
-
-        context.DrawImage(bitmap, srcRect, destRect);
+        context.DrawImage(bmp,
+            new Rect(0, 0, SnesWidth, SnesHeight),
+            new Rect(ox, oy, w, h));
     }
 }

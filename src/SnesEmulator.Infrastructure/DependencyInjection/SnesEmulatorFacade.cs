@@ -9,11 +9,6 @@ using SnesEmulator.Input.Controllers;
 
 namespace SnesEmulator.Infrastructure.DependencyInjection;
 
-/// <summary>
-/// Top-level Facade implementing <see cref="IEmulator"/>.
-/// Orchestrates all subsystems behind a clean, state-guarded public API.
-/// UI layer only ever talks to this class through the IEmulator interface.
-/// </summary>
 public sealed class SnesEmulatorFacade : IEmulator, IDisposable
 {
     private readonly ILogger<SnesEmulatorFacade> _logger;
@@ -63,6 +58,9 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
         _loop         = loop;
         _saveState    = saveState;
         _inputManager = inputManager;
+
+        // Wire the loop to the bus so NMITIMEN writes reach the loop
+        _bus.AttachLoop(_loop);
     }
 
     public void LoadRom(string filePath)
@@ -93,7 +91,6 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
         if (_state == EmulatorState.Idle)
             throw new EmulatorStateException("Load a ROM before starting emulation.");
         if (_state == EmulatorState.Running) return;
-
         TransitionTo(EmulatorState.Running);
         StartRunLoop();
     }
@@ -137,14 +134,9 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
     {
         if (_state == EmulatorState.Idle)
             throw new EmulatorStateException("Nothing to save — no ROM loaded.");
-
         bool wasRunning = _state == EmulatorState.Running;
         if (wasRunning) Pause();
-        try
-        {
-            EnsureDir(filePath);
-            _saveState.SaveState(filePath, Cpu, Ppu, Apu, _wram);
-        }
+        try { EnsureDir(filePath); _saveState.SaveState(filePath, Cpu, Ppu, Apu, _wram); }
         finally { if (wasRunning) Run(); }
     }
 
@@ -152,7 +144,6 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
     {
         if (_state == EmulatorState.Idle)
             throw new EmulatorStateException("Load a ROM before restoring state.");
-
         bool wasRunning = _state == EmulatorState.Running;
         if (wasRunning) Pause();
         try   { _saveState.LoadState(filePath, Cpu, Ppu, Apu, _wram); }
@@ -167,7 +158,7 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
         _runTask = Task.Run(() =>
         {
             const double targetFps = 60.0;
-            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var  sw         = System.Diagnostics.Stopwatch.StartNew();
             long frameCount = 0;
 
             while (!token.IsCancellationRequested)
@@ -184,13 +175,12 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
 
                 frameCount++;
 
-                // Throttle: spin-wait to hit target FPS
-                // Avoid Task.Delay — it has 15ms minimum resolution on Windows
-                double targetMs = frameCount * (1000.0 / targetFps);
+                // Spin-wait throttle — Task.Delay has 15ms resolution on Windows
+                double targetMs  = frameCount * (1000.0 / targetFps);
                 double elapsedMs = sw.Elapsed.TotalMilliseconds;
-                int sleepMs = (int)(targetMs - elapsedMs);
-                if (sleepMs > 1)
-                    Thread.Sleep(sleepMs);
+                int    sleepMs   = (int)(targetMs - elapsedMs);
+                if (sleepMs > 1) Thread.Sleep(sleepMs);
+                // If we're running behind, don't sleep and catch up naturally
             }
         }, token);
     }
@@ -206,8 +196,12 @@ public sealed class SnesEmulatorFacade : IEmulator, IDisposable
 
     private void HardReset()
     {
-        Cpu.Reset(); Ppu.Reset(); Apu.Reset();
-        _bus.Reset(); _inputManager.Reset();
+        Cpu.Reset();
+        Ppu.Reset();
+        Apu.Reset();
+        _bus.Reset();
+        _loop.Reset();
+        _inputManager.Reset();
     }
 
     private void TransitionTo(EmulatorState next)

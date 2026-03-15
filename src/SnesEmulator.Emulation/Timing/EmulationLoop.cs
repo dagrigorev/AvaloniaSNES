@@ -1,96 +1,102 @@
 using Microsoft.Extensions.Logging;
 using SnesEmulator.Core;
 using SnesEmulator.Core.Interfaces;
+using SnesEmulator.Emulation.Memory;
 
 namespace SnesEmulator.Emulation.Timing;
 
 /// <summary>
-/// The main emulation loop — coordinates CPU, PPU, and APU execution.
+/// Scanline-accurate emulation loop.
 ///
-/// SNES timing:
-///   Master clock: 21.477272 MHz (NTSC)
-///   CPU: runs at masterClock / 6 (fast) or / 8 (slow) cycles
-///   PPU: 1 dot = 4 master clocks; 341 dots per scanline; 262 scanlines/frame
-///   APU: runs at masterClock / 21 (≈1.024 MHz)
-///   Target: ~60.098 fps (NTSC)
+/// SNES frame timing (NTSC):
+///   Scanlines 0–224:   Active display  → $4212 bit7=0, game logic runs
+///   Scanline  225:     VBlank start    → $4212 bit7=1, NMI fires (if enabled)
+///   Scanlines 226–261: VBlank          → PPU register uploads
+///   Scanline  0 next:  New frame start → $4212 bit7=0, NMI flag cleared
 ///
-/// The loop uses a fixed-timestep approach:
-///   Execute CPU instructions in batches, driving PPU/APU by their
-///   proportional master clock share. This isn't cycle-accurate but
-///   maintains correct average timing.
+/// SMW boot sequence relies on:
+///   1. $4212 bit7=0 during active display so VBlank-wait loops exit
+///   2. NMI flag in $4210 only set for the CURRENT frame's VBlank
+///   3. NMI vector fired once at scanline 225 when NMITIMEN bit7=1
 /// </summary>
 public sealed class EmulationLoop
 {
-    private readonly ICpu _cpu;
-    private readonly IPpu _ppu;
-    private readonly IApu _apu;
+    private readonly ICpu      _cpu;
+    private readonly IPpu      _ppu;
+    private readonly IApu      _apu;
+    private readonly MemoryBus _bus;
     private readonly ILogger<EmulationLoop> _logger;
 
-    // How many master clock cycles to execute per "batch" (one loop iteration)
-    // ~1/60th second worth of master clocks = 21_477_272 / 60 ≈ 357_954
-    private const int MasterCyclesPerFrame = 357_954;
+    private const int MasterCyclesPerScanline = 1364;  // 341 dots × 4
+    private const int ScanlinesPerFrame       = 262;
+    private const int VBlankStartScanline     = 225;
+    private const int CpuCyclesMultiplier     = SnesConstants.CpuSlowCycles;
 
-    // CPU cycles in master clocks (slow ROM region = 8 master cycles per CPU cycle)
-    private const int CpuCyclesMultiplier = SnesConstants.CpuSlowCycles;
+    public bool NmiEnabled { get; set; } = false;
 
-    // NMI is triggered once per frame at V-blank start
-    private bool _nmiTriggered;
-
-    // Accumulated master cycles for this frame
-    private long _frameCycleAccum;
-
-    public EmulationLoop(ICpu cpu, IPpu ppu, IApu apu, ILogger<EmulationLoop> logger)
+    public EmulationLoop(ICpu cpu, IPpu ppu, IApu apu, MemoryBus bus,
+                         ILogger<EmulationLoop> logger)
     {
-        _cpu = cpu;
-        _ppu = ppu;
-        _apu = apu;
+        _cpu    = cpu;
+        _ppu    = ppu;
+        _apu    = apu;
+        _bus    = bus;
         _logger = logger;
     }
 
-    /// <summary>
-    /// Executes one full frame worth of emulation.
-    /// Returns the number of master clock cycles consumed.
-    ///
-    /// This is called by the emulator's run loop at ~60 fps.
-    /// </summary>
-    public long RunFrame()
+    public void Reset()
     {
-        long cyclesThisFrame = 0;
-        _nmiTriggered = false;
-
-        while (cyclesThisFrame < MasterCyclesPerFrame)
-        {
-            // Step the CPU by one instruction
-            int cpuInstrCycles = _cpu.Step();
-            int masterCycles   = cpuInstrCycles * CpuCyclesMultiplier;
-
-            // Advance PPU by the same number of master cycles
-            _ppu.Clock(masterCycles);
-
-            // Advance APU proportionally
-            _apu.Clock(masterCycles);
-
-            cyclesThisFrame += masterCycles;
-
-            // Trigger NMI once per frame when PPU enters V-blank
-            if (!_nmiTriggered && _ppu.IsVBlank)
-            {
-                _cpu.TriggerNmi();
-                _nmiTriggered = true;
-            }
-        }
-
-        _frameCycleAccum += cyclesThisFrame;
-        return cyclesThisFrame;
+        NmiEnabled = false;
+        // Start with screen in active display state (not VBlank)
+        _bus.SetHvBjoy(inVBlank: false, inHBlank: false);
+        _bus.ClearNmiFlag();
     }
 
-    /// <summary>
-    /// Executes exactly one CPU instruction (for step-debug mode).
-    /// Also advances PPU/APU proportionally.
-    /// </summary>
+    public long RunFrame()
+    {
+        long totalMasterCycles = 0;
+
+        // Clear NMI flag at start of each new frame (scanline 0)
+        // This ensures the flag only reflects THIS frame's VBlank
+        _bus.ClearNmiFlag();
+
+        for (int sl = 0; sl < ScanlinesPerFrame; sl++)
+        {
+            bool inVBlank = sl >= VBlankStartScanline;
+
+            // Update $4212 at scanline start: HBlank=false, VBlank per scanline
+            _bus.SetHvBjoy(inVBlank, inHBlank: false);
+
+            // Fire NMI exactly once: at the first scanline of VBlank
+            if (sl == VBlankStartScanline && NmiEnabled)
+                _cpu.TriggerNmi();
+
+            // Set NMI flag in $4210 when VBlank starts (readable even without NMI interrupt)
+            if (sl == VBlankStartScanline)
+                _bus.SetNmiFlag();
+
+            // Run CPU instructions for this scanline
+            int scanlineCycles = 0;
+            while (scanlineCycles < MasterCyclesPerScanline)
+            {
+                int cpuCycles    = _cpu.Step();
+                int masterCycles = cpuCycles * CpuCyclesMultiplier;
+                _ppu.Clock(masterCycles);
+                _apu.Clock(masterCycles);
+                scanlineCycles    += masterCycles;
+                totalMasterCycles += masterCycles;
+            }
+
+            // Set HBlank at end of scanline
+            _bus.SetHvBjoy(inVBlank, inHBlank: true);
+        }
+
+        return totalMasterCycles;
+    }
+
     public int StepOne()
     {
-        int cpuCycles  = _cpu.Step();
+        int cpuCycles    = _cpu.Step();
         int masterCycles = cpuCycles * CpuCyclesMultiplier;
         _ppu.Clock(masterCycles);
         _apu.Clock(masterCycles);
