@@ -47,6 +47,9 @@ public sealed class Ppu : IPpu
 
     // Each PPU dot = 4 master clock cycles
     private const int MasterCyclesPerDot = 4;
+    private readonly uint[] _objScanlineBuffer = new uint[SnesConstants.ScreenWidth];
+    private readonly bool[] _objScanlineOpaque = new bool[SnesConstants.ScreenWidth];
+    private int _preparedObjScanline = -1;
 
     // ── PPU Registers ─────────────────────────────────────────────────────────
     private byte _inidisp;      // $2100 — Screen display / brightness
@@ -166,6 +169,9 @@ public sealed class Ppu : IPpu
 
     private void TickDot()
     {
+        if (_dot == 0)
+            _preparedObjScanline = -1;
+
         // Render pixel during visible region
         if (_scanline < SnesConstants.ScreenHeightNtsc && _dot < SnesConstants.ScreenWidth)
         {
@@ -424,7 +430,19 @@ public sealed class Ppu : IPpu
 
     private uint SampleObjPixel(int x, int y)
     {
-        for (int spriteIndex = 0; spriteIndex < 128; spriteIndex++)
+        PrepareObjScanline(y);
+        return (uint)(x < _objScanlineOpaque.Length && _objScanlineOpaque[x] ? _objScanlineBuffer[x] : 0);
+    }
+
+    private void PrepareObjScanline(int y)
+    {
+        if (_preparedObjScanline == y)
+            return;
+
+        Array.Clear(_objScanlineOpaque, 0, _objScanlineOpaque.Length);
+        Array.Clear(_objScanlineBuffer, 0, _objScanlineBuffer.Length);
+
+        for (int spriteIndex = 127; spriteIndex >= 0; spriteIndex--)
         {
             int low = spriteIndex * 4;
             int xLow = _oam[low];
@@ -447,52 +465,58 @@ public sealed class Ppu : IPpu
             if (relY >= spriteHeight)
                 continue;
 
-            int relX = x - spriteX;
-            if (relX < 0 || relX >= spriteWidth)
-                continue;
-
             bool vflip = (attr & 0x80) != 0;
             bool hflip = (attr & 0x40) != 0;
             int palette = (attr >> 1) & 0x07;
             bool nameTable = (attr & 0x01) != 0;
 
-            int effX = hflip ? spriteWidth - 1 - relX : relX;
             int effY = vflip ? spriteHeight - 1 - relY : relY;
-
-            int subTileX = effX >> 3;
             int subTileY = effY >> 3;
-            int tilePixelX = effX & 7;
             int tilePixelY = effY & 7;
-            int tileIndex = (tileBase + subTileX + subTileY * 16) & 0xFF;
 
-            int tileByteAddress = GetObjTileByteAddress(tileIndex, nameTable) + tilePixelY * 2;
-            if (tileByteAddress + 17 >= _vram.Length)
+            int startX = Math.Max(0, spriteX);
+            int endX = Math.Min(SnesConstants.ScreenWidth, spriteX + spriteWidth);
+            if (endX <= startX)
                 continue;
 
-            byte p0lo = _vram[tileByteAddress];
-            byte p0hi = _vram[tileByteAddress + 1];
-            byte p1lo = _vram[tileByteAddress + 16];
-            byte p1hi = _vram[tileByteAddress + 17];
+            for (int screenX = startX; screenX < endX; screenX++)
+            {
+                int relX = screenX - spriteX;
+                int effX = hflip ? spriteWidth - 1 - relX : relX;
+                int subTileX = effX >> 3;
+                int tilePixelX = effX & 7;
+                int tileIndex = (tileBase + subTileX + subTileY * 16) & 0xFF;
 
-            int bit = 7 - tilePixelX;
-            int colorIndex = ((p0lo >> bit) & 1)
-                           | (((p0hi >> bit) & 1) << 1)
-                           | (((p1lo >> bit) & 1) << 2)
-                           | (((p1hi >> bit) & 1) << 3);
+                int tileByteAddress = GetObjTileByteAddress(tileIndex, nameTable) + tilePixelY * 2;
+                if (tileByteAddress + 17 >= _vram.Length)
+                    continue;
 
-            if (colorIndex == 0)
-                continue;
+                byte p0lo = _vram[tileByteAddress];
+                byte p0hi = _vram[tileByteAddress + 1];
+                byte p1lo = _vram[tileByteAddress + 16];
+                byte p1hi = _vram[tileByteAddress + 17];
 
-            int cgramIndex = 128 + palette * 16 + colorIndex;
-            int cgramAddr = cgramIndex * 2;
-            if (cgramAddr + 1 >= _cgram.Length)
-                return 0;
+                int bit = 7 - tilePixelX;
+                int colorIndex = ((p0lo >> bit) & 1)
+                               | (((p0hi >> bit) & 1) << 1)
+                               | (((p1lo >> bit) & 1) << 2)
+                               | (((p1hi >> bit) & 1) << 3);
 
-            ushort snesColor = (ushort)(_cgram[cgramAddr] | (_cgram[cgramAddr + 1] << 8));
-            return SnesFrameBuffer.SnesColorToArgb(snesColor);
+                if (colorIndex == 0)
+                    continue;
+
+                int cgramIndex = 128 + palette * 16 + colorIndex;
+                int cgramAddr = cgramIndex * 2;
+                if (cgramAddr + 1 >= _cgram.Length)
+                    continue;
+
+                ushort snesColor = (ushort)(_cgram[cgramAddr] | (_cgram[cgramAddr + 1] << 8));
+                _objScanlineBuffer[screenX] = SnesFrameBuffer.SnesColorToArgb(snesColor);
+                _objScanlineOpaque[screenX] = true;
+            }
         }
 
-        return 0;
+        _preparedObjScanline = y;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -659,9 +683,9 @@ public sealed class Ppu : IPpu
                     _logger.LogDebug("OBSEL: ${Old:X2} → ${New:X2}", _obsel, value);
                 _obsel = value;
                 break;
-            case 0x02: _oamadd = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); break;
-            case 0x03: _oamaddh = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); break;
-            case 0x04: WriteOam(value); break;
+            case 0x02: _oamadd = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); InvalidateObjCache(); break;
+            case 0x03: _oamaddh = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); InvalidateObjCache(); break;
+            case 0x04: WriteOam(value); InvalidateObjCache(); break;
             case 0x05:
                 if (_bgmode != value)
                     _logger.LogDebug("BGMODE: ${Old:X2} → ${New:X2} (Mode {Mode})", _bgmode, value, value & 7);
@@ -688,8 +712,8 @@ public sealed class Ppu : IPpu
             case 0x18: WriteVramLow(value); break;
             case 0x19: WriteVramHigh(value); break;
             case 0x1A: _m7sel = value; break;
-            case 0x21: _cgadd = value; _cgramHighByte = false; break;
-            case 0x22: WriteCgram(value); break;
+            case 0x21: _cgadd = value; _cgramHighByte = false; InvalidateObjCache(); break;
+            case 0x22: WriteCgram(value); InvalidateObjCache(); break;
             case 0x23: _w12sel = value; break;
             case 0x24: _w34sel = value; break;
             case 0x25: _wobjsel = value; break;
@@ -720,6 +744,7 @@ public sealed class Ppu : IPpu
     {
         int addr = GetVramByteAddress();
         if (addr < _vram.Length) _vram[addr] = value;
+        InvalidateObjCache();
         if ((_vmain & 0x80) == 0) IncrementVramAddress(); // Increment on low write if bit7=0
     }
 
@@ -727,6 +752,7 @@ public sealed class Ppu : IPpu
     {
         int addr = GetVramByteAddress() + 1;
         if (addr < _vram.Length) _vram[addr] = value;
+        InvalidateObjCache();
         if ((_vmain & 0x80) != 0) IncrementVramAddress(); // Increment on high write if bit7=1
     }
 
@@ -864,6 +890,11 @@ public sealed class Ppu : IPpu
         if ((value & 0x20) != 0) _coldata = (ushort)((_coldata & ~0x001F) | intensity);
         if ((value & 0x40) != 0) _coldata = (ushort)((_coldata & ~0x03E0) | (intensity << 5));
         if ((value & 0x80) != 0) _coldata = (ushort)((_coldata & ~0x7C00) | (intensity << 10));
+    }
+
+    private void InvalidateObjCache()
+    {
+        _preparedObjScanline = -1;
     }
 
     // ── IStateful ────────────────────────────────────────────────────────────
