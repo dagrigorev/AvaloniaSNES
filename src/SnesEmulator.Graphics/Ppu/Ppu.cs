@@ -69,6 +69,9 @@ public sealed class Ppu : IPpu
     private byte _vmain;        // $2115 — VRAM address increment mode
     private ushort _vmadd;      // $2116–$2117 — VRAM address
     private byte _m7sel;        // $211A — Mode 7 settings
+    private short _m7a, _m7b, _m7c, _m7d; // $211B-$211E — Mode 7 matrix
+    private short _m7x, _m7y;             // $211F-$2120 — Mode 7 center
+    private short _m7hofs, _m7vofs;       // $210D/$210E in Mode 7
     private byte _cgadd;        // $2121 — CGRAM address
     private byte _w12sel;       // $2123 — Window 1/2 BG mask
     private byte _w34sel;       // $2124
@@ -103,6 +106,7 @@ public sealed class Ppu : IPpu
     // BG scroll registers share a single previous-byte latch across all BGnHOFS/BGnVOFS writes.
     // This matches the SNES write-twice behaviour closely enough for common boot/title code.
     private byte _bgScrollPrevByte;
+    private byte _mode7PrevByte;
 
     // ── Events ────────────────────────────────────────────────────────────────
     public event EventHandler<FrameReadyEventArgs>? FrameReady;
@@ -146,6 +150,15 @@ public sealed class Ppu : IPpu
         _cgadd = 0;
         _bgScrollPrevByte = 0;
         _oamPointer = 0;
+        _m7a = 0x0100;
+        _m7b = 0;
+        _m7c = 0;
+        _m7d = 0x0100;
+        _m7x = 0;
+        _m7y = 0;
+        _m7hofs = 0;
+        _m7vofs = 0;
+        _mode7PrevByte = 0;
         _oamWriteLatch = 0;
         _oamWriteLowPending = false;
         _frameBuffer.Clear();
@@ -245,6 +258,10 @@ public sealed class Ppu : IPpu
         {
             // Mode 1: BG1+BG2 are 16-color (4bpp), BG3 is 4-color (2bpp)
             pixelColor = RenderMode1Pixel(x, y, bgColor);
+        }
+        else if (mode == 7)
+        {
+            pixelColor = RenderMode7Pixel(x, y, bgColor);
         }
         else
         {
@@ -426,6 +443,83 @@ public sealed class Ppu : IPpu
         ushort snesColor = (ushort)(_cgram[paletteBase] | (_cgram[paletteBase + 1] << 8));
         return SnesFrameBuffer.SnesColorToArgb(snesColor);
     }
+
+    private uint RenderMode7Pixel(int x, int y, uint bgColor)
+    {
+        if ((_tm & 0x01) == 0)
+            return bgColor;
+
+        int screenX = (_m7sel & 0x01) != 0 ? 255 - x : x;
+        int screenY = (_m7sel & 0x02) != 0 ? 255 - y : y;
+
+        int a = _m7a;
+        int b = _m7b;
+        int c = _m7c;
+        int d = _m7d;
+        int cx = _m7x;
+        int cy = _m7y;
+        int hofs = _m7hofs;
+        int vofs = _m7vofs;
+
+        int dx = screenX + hofs - cx;
+        int dy = screenY + vofs - cy;
+
+        int texX = ((a * dx) + (b * dy) + (cx << 8)) >> 8;
+        int texY = ((c * dx) + (d * dy) + (cy << 8)) >> 8;
+
+        bool largeField = (_m7sel & 0x80) != 0;
+        bool fillTile0 = (_m7sel & 0x40) != 0;
+
+        if (!largeField)
+        {
+            texX &= 0x3FF;
+            texY &= 0x3FF;
+        }
+        else if ((uint)texX >= 1024 || (uint)texY >= 1024)
+        {
+            if (fillTile0)
+            {
+                texX = 0;
+                texY = 0;
+            }
+            else
+            {
+                return bgColor;
+            }
+        }
+
+        int tileX = (texX >> 3) & 0x7F;
+        int tileY = (texY >> 3) & 0x7F;
+        int mapWord = tileY * 128 + tileX;
+        int mapAddr = mapWord * 2;
+        if (mapAddr >= _vram.Length)
+            return bgColor;
+
+        int tileIndex = _vram[mapAddr];
+        int pixelInTile = ((texY & 7) << 3) | (texX & 7);
+        int tileByteIndex = tileIndex * 64 + pixelInTile;
+        int tileDataAddr = tileByteIndex * 2 + 1;
+        if ((uint)tileDataAddr >= (uint)_vram.Length)
+            return bgColor;
+
+        byte colorIndex = _vram[tileDataAddr];
+        if (colorIndex == 0)
+            return bgColor;
+
+        int cgramAddr = colorIndex * 2;
+        if (cgramAddr + 1 >= _cgram.Length)
+            return bgColor;
+
+        ushort snesColor = (ushort)(_cgram[cgramAddr] | (_cgram[cgramAddr + 1] << 8));
+        return SnesFrameBuffer.SnesColorToArgb(snesColor);
+    }
+
+    private static short SignExtend13(ushort value)
+    {
+        value &= 0x1FFF;
+        return (short)(((value & 0x1000) != 0) ? (value | 0xE000) : value);
+    }
+
 
 
     private uint SampleObjPixel(int x, int y)
@@ -698,8 +792,12 @@ public sealed class Ppu : IPpu
             case 0x0A: WriteBgSc(3, value); break;
             case 0x0B: _bg12nba = value; break;
             case 0x0C: _bg34nba = value; break;
-            case 0x0D: WriteBgHOffset(0, value); break;
-            case 0x0E: WriteBgVOffset(0, value); break;
+            case 0x0D:
+                if ((_bgmode & 0x07) == 7) WriteMode7HOffset(value); else WriteBgHOffset(0, value);
+                break;
+            case 0x0E:
+                if ((_bgmode & 0x07) == 7) WriteMode7VOffset(value); else WriteBgVOffset(0, value);
+                break;
             case 0x0F: WriteBgHOffset(1, value); break;
             case 0x10: WriteBgVOffset(1, value); break;
             case 0x11: WriteBgHOffset(2, value); break;
@@ -711,7 +809,17 @@ public sealed class Ppu : IPpu
             case 0x17: _vmadd = (ushort)((_vmadd & 0x00FF) | (value << 8)); break;
             case 0x18: WriteVramLow(value); break;
             case 0x19: WriteVramHigh(value); break;
-            case 0x1A: _m7sel = value; break;
+            case 0x1A:
+                if (_m7sel != value)
+                    _logger.LogDebug("M7SEL: ${Old:X2} → ${New:X2}", _m7sel, value);
+                _m7sel = value;
+                break;
+            case 0x1B: WriteMode7Matrix(ref _m7a, value, "M7A"); break;
+            case 0x1C: WriteMode7Matrix(ref _m7b, value, "M7B"); break;
+            case 0x1D: WriteMode7Matrix(ref _m7c, value, "M7C"); break;
+            case 0x1E: WriteMode7Matrix(ref _m7d, value, "M7D"); break;
+            case 0x1F: WriteMode7Center(ref _m7x, value, "M7X"); break;
+            case 0x20: WriteMode7Center(ref _m7y, value, "M7Y"); break;
             case 0x21: _cgadd = value; _cgramHighByte = false; InvalidateObjCache(); break;
             case 0x22: WriteCgram(value); InvalidateObjCache(); break;
             case 0x23: _w12sel = value; break;
@@ -883,6 +991,37 @@ public sealed class Ppu : IPpu
         _bgVOffset[layer] = (ushort)((value << 8) | _bgScrollPrevByte);
         _bgScrollPrevByte = value;
     }
+
+    private void WriteMode7Matrix(ref short target, byte value, string name)
+    {
+        short old = target;
+        target = (short)((value << 8) | _mode7PrevByte);
+        _mode7PrevByte = value;
+        if (old != target)
+            _logger.LogDebug("{Name}: {Old} → {New}", name, old, target);
+    }
+
+    private void WriteMode7Center(ref short target, byte value, string name)
+    {
+        short old = target;
+        target = SignExtend13((ushort)(((value & 0x1F) << 8) | _mode7PrevByte));
+        _mode7PrevByte = value;
+        if (old != target)
+            _logger.LogDebug("{Name}: {Old} → {New}", name, old, target);
+    }
+
+    private void WriteMode7HOffset(byte value)
+    {
+        _m7hofs = SignExtend13((ushort)(((value & 0x1F) << 8) | _mode7PrevByte));
+        _mode7PrevByte = value;
+    }
+
+    private void WriteMode7VOffset(byte value)
+    {
+        _m7vofs = SignExtend13((ushort)(((value & 0x1F) << 8) | _mode7PrevByte));
+        _mode7PrevByte = value;
+    }
+
 
     private void WriteColdata(byte value)
     {

@@ -700,3 +700,83 @@ public sealed class SpriteRenderingTests
         ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
     }
 }
+
+
+public sealed class Mode7RenderingTests
+{
+    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+
+    [Fact]
+    public void Mode7_IdentityMatrix_RendersTilemapPixel()
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        ppu.WriteRegister(0x05, 0x07); // mode 7
+        ppu.WriteRegister(0x2C, 0x01); // BG1 main screen
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+
+        // Identity transform.
+        WriteMode7Word(ppu, 0x1B, 0x0100); // A
+        WriteMode7Word(ppu, 0x1C, 0x0000); // B
+        WriteMode7Word(ppu, 0x1D, 0x0000); // C
+        WriteMode7Word(ppu, 0x1E, 0x0100); // D
+        WriteMode7Coord(ppu, 0x1F, 0);     // X
+        WriteMode7Coord(ppu, 0x20, 0);     // Y
+        WriteMode7Coord(ppu, 0x0D, 0);     // HOFS
+        WriteMode7Coord(ppu, 0x0E, 0);     // VOFS
+
+        // Tilemap entry (0,0) -> tile #1, stored in low byte of VRAM word 0.
+        SetVramWord(ppu, 0x0000, 0x0001);
+
+        // Mode 7 tile pixels live in the high byte of VRAM words.
+        // Tile #1 starts at byte index 64 within the chunky tile stream.
+        WriteMode7TileByte(ppu, 64, 5); // top-left pixel palette index 5
+        SetCgramColor(ppu, 5, 0x03E0);  // green
+
+        // Render the first visible pixel.
+        ppu.Clock(4);
+
+        var fb = (SnesFrameBuffer)ppu.FrameBuffer;
+        fb.Pixels[0].Should().Be(SnesFrameBuffer.SnesColorToArgb(0x03E0));
+    }
+
+    private static void WriteMode7Word(Ppu ppu, byte reg, ushort value)
+    {
+        ppu.WriteRegister(reg, (byte)(value & 0xFF));
+        ppu.WriteRegister(reg, (byte)(value >> 8));
+    }
+
+    private static void WriteMode7Coord(Ppu ppu, byte reg, short value)
+    {
+        ushort raw = (ushort)(value & 0x1FFF);
+        ppu.WriteRegister(reg, (byte)(raw & 0xFF));
+        ppu.WriteRegister(reg, (byte)((raw >> 8) & 0x1F));
+    }
+
+    private static void WriteMode7TileByte(Ppu ppu, int byteIndex, byte value)
+    {
+        int wordAddr = byteIndex;
+        ppu.WriteRegister(0x15, 0x80); // increment on high byte
+        ppu.WriteRegister(0x16, (byte)(wordAddr & 0xFF));
+        ppu.WriteRegister(0x17, (byte)(wordAddr >> 8));
+        ppu.WriteRegister(0x18, 0x00);
+        ppu.WriteRegister(0x19, value);
+    }
+
+    private static void SetVramWord(Ppu ppu, int wordAddr, ushort value)
+    {
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, (byte)(wordAddr & 0xFF));
+        ppu.WriteRegister(0x17, (byte)(wordAddr >> 8));
+        ppu.WriteRegister(0x18, (byte)(value & 0xFF));
+        ppu.WriteRegister(0x19, (byte)(value >> 8));
+    }
+
+    private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
+    {
+        ppu.WriteRegister(0x21, (byte)colorIndex);
+        ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
+        ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+}
