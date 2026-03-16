@@ -161,6 +161,46 @@ public sealed class MemoryBusTests
         bus.ConsumeNmi().Should().BeFalse();
     }
 
+
+    [Fact]
+    public void EnablingNmiInsideActiveVblank_PendsAtMostOnceUntilNextEdge()
+    {
+        var bus = CreateBus();
+
+        bus.Write(0x004200, 0x00);
+        bus.SetVBlankState(false, 0, 224);
+        bus.SetVBlankState(true, 0, 225);
+
+        bus.ConsumeNmi().Should().BeFalse();
+
+        bus.Write(0x004200, 0x80);
+        bus.ConsumeNmi().Should().BeTrue();
+        bus.ConsumeNmi().Should().BeFalse();
+
+        bus.Write(0x004200, 0x00);
+        bus.Write(0x004200, 0x80);
+        bus.ConsumeNmi().Should().BeFalse();
+
+        bus.SetVBlankState(false, 0, 260);
+        bus.SetVBlankState(true, 1, 225);
+        bus.ConsumeNmi().Should().BeTrue();
+    }
+
+    [Fact]
+    public void RdnmiReadDuringActiveVblank_DoesNotCreateAnotherPendingNmi()
+    {
+        var bus = CreateBus();
+
+        bus.Write(0x004200, 0x80);
+        bus.SetVBlankState(false, 0, 224);
+        bus.SetVBlankState(true, 0, 225);
+
+        bus.ConsumeNmi().Should().BeTrue();
+        bus.Read(0x004210).Should().Be(0x82);
+        bus.Read(0x004210).Should().Be(0x02);
+        bus.ConsumeNmi().Should().BeFalse();
+    }
+
     [Fact]
     public void Hvbjoy_ReflectsCurrentVblankAndHblankBits()
     {

@@ -39,6 +39,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private bool _prevVblankLevel;
     private bool _rdnmiLatched;
     private bool _nmiPending;
+    private bool _nmiScheduledThisVblank;
     private byte _wrio;       // $4201 — Joypad programmable I/O port
     private byte _wrmpya;     // $4202 — Multiplicand
     private byte _wrmpyb;     // $4203 — Multiplier
@@ -89,6 +90,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _prevVblankLevel = false;
         _rdnmiLatched    = false;
         _nmiPending      = false;
+        _nmiScheduledThisVblank = false;
         _hvbjoy          = 0;
         _wrdiva          = 0;
         _rddiv           = 0;
@@ -137,11 +139,22 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         }
 
         bool enteredVBlank = !_prevVblankLevel && isVBlank;
+        bool leftVBlank = _prevVblankLevel && !isVBlank;
+        if (leftVBlank)
+        {
+            _nmiScheduledThisVblank = false;
+        }
+
         if (enteredVBlank)
         {
             _rdnmiLatched = true;
+            _nmiScheduledThisVblank = false;
+
             if ((_nmitimen & 0x80) != 0)
+            {
                 _nmiPending = true;
+                _nmiScheduledThisVblank = true;
+            }
 
             if (_vblankTraceCount < 512)
             {
@@ -376,15 +389,25 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         switch (offset)
         {
             case 0x4200: // NMITIMEN — NMI/IRQ/auto-joypad enable
+            {
+                bool nmiWasEnabled = (_nmitimen & 0x80) != 0;
                 _nmitimen = value;
+
+                if (!nmiWasEnabled && (_nmitimen & 0x80) != 0 && _vblankLevel && _rdnmiLatched && !_nmiScheduledThisVblank)
+                {
+                    _nmiPending = true;
+                    _nmiScheduledThisVblank = true;
+                }
+
                 if (_ioTraceCount < 512)
                 {
                     _logger.LogDebug(
-                        "CPU write NMITIMEN from ${Pbr:X2}:{Pc:X4} value=${Val:X2} (frame {Frame}, scanline {Scanline})",
-                        _lastCpuPbr, _lastCpuPc, value, _traceFrame, _traceScanline);
+                        "CPU write NMITIMEN from ${Pbr:X2}:{Pc:X4} value=${Val:X2} (frame {Frame}, scanline {Scanline}, pending={Pending})",
+                        _lastCpuPbr, _lastCpuPc, value, _traceFrame, _traceScanline, _nmiPending ? 1 : 0);
                     _ioTraceCount++;
                 }
                 break;
+            }
             case 0x4201: _wrio   = value; break;
             case 0x4202: _wrmpya = value; break;
             case 0x4203: // WRMPYB — writing triggers multiply

@@ -305,23 +305,58 @@ public sealed class Ppu : IPpu
     {
         uint color = bgColor;
 
-        // BG3 (2bpp) — lowest priority
+        // Mode 1 priority ladder (BG-only approximation):
+        //   BG3 low, BG2 low, BG1 low, BG3 high* / BG2 high / BG1 high
+        // where BGMODE bit 3 optionally raises BG3 above BG1/BG2 low priority.
+        bool bg3HighPriority = (_bgmode & 0x08) != 0;
+
         if ((_tm & 0x04) != 0)
         {
-            uint c = SampleBgLayer2bpp(2, x, y);
-            if ((c & 0xFF000000) != 0) color = c;
+            var (c, priority) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((c & 0xFF000000) != 0 && !priority)
+                color = c;
         }
-        // BG2 (4bpp)
+
         if ((_tm & 0x02) != 0)
         {
-            uint c = SampleBgLayer4bpp(1, x, y);
-            if ((c & 0xFF000000) != 0) color = c;
+            var (c, priority) = SampleBgLayer4bppWithPriority(1, x, y);
+            if ((c & 0xFF000000) != 0 && !priority)
+                color = c;
         }
-        // BG1 (4bpp) — highest priority BG
+
         if ((_tm & 0x01) != 0)
         {
-            uint c = SampleBgLayer4bpp(0, x, y);
-            if ((c & 0xFF000000) != 0) color = c;
+            var (c, priority) = SampleBgLayer4bppWithPriority(0, x, y);
+            if ((c & 0xFF000000) != 0 && !priority)
+                color = c;
+        }
+
+        if (bg3HighPriority && (_tm & 0x04) != 0)
+        {
+            var (c, priority) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((c & 0xFF000000) != 0 && priority)
+                color = c;
+        }
+
+        if ((_tm & 0x02) != 0)
+        {
+            var (c, priority) = SampleBgLayer4bppWithPriority(1, x, y);
+            if ((c & 0xFF000000) != 0 && priority)
+                color = c;
+        }
+
+        if ((_tm & 0x01) != 0)
+        {
+            var (c, priority) = SampleBgLayer4bppWithPriority(0, x, y);
+            if ((c & 0xFF000000) != 0 && priority)
+                color = c;
+        }
+
+        if (!bg3HighPriority && (_tm & 0x04) != 0)
+        {
+            var (c, priority) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((c & 0xFF000000) != 0 && priority)
+                color = c;
         }
 
         return color;
@@ -344,6 +379,9 @@ public sealed class Ppu : IPpu
     /// Returns transparent (alpha=0) if color index 0.
     /// </summary>
     private uint SampleBgLayer2bpp(int layer, int x, int y)
+        => SampleBgLayer2bppWithPriority(layer, x, y).Color;
+
+    private (uint Color, bool Priority) SampleBgLayer2bppWithPriority(int layer, int x, int y)
     {
         byte sc = GetBgSc(layer);
         int tileSize = GetBgTileSize(layer);
@@ -361,10 +399,11 @@ public sealed class Ppu : IPpu
         int pixY  = mapY % tileSize;
 
         int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
-        if (tilemapAddr + 1 >= _vram.Length) return 0;
+        if (tilemapAddr + 1 >= _vram.Length) return (0, false);
 
         ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
         int tileNum  = entry & 0x03FF;
+        bool priority = (entry & 0x2000) != 0;
         bool hflip   = (entry & 0x4000) != 0;
         bool vflip   = (entry & 0x8000) != 0;
         int palette  = (entry >> 10) & 0x07;
@@ -373,26 +412,29 @@ public sealed class Ppu : IPpu
 
         int charBase = GetBgCharBase(layer);
         int tileAddr = charBase + tileNum * 16 + tpy * 2;
-        if (tileAddr + 1 >= _vram.Length) return 0;
+        if (tileAddr + 1 >= _vram.Length) return (0, false);
 
         byte lo = _vram[tileAddr];
         byte hi = _vram[tileAddr + 1];
 
         int shift = 7 - tpx;
         int colorIndex = (((lo >> shift) & 1)) | (((hi >> shift) & 1) << 1);
-        if (colorIndex == 0) return 0;
+        if (colorIndex == 0) return (0, false);
 
         int paletteBase = (palette * 4 + colorIndex) * 2;
-        if (paletteBase + 1 >= _cgram.Length) return 0xFF808080;
+        if (paletteBase + 1 >= _cgram.Length) return (0xFF808080, priority);
 
         ushort snesColor = (ushort)(_cgram[paletteBase] | (_cgram[paletteBase + 1] << 8));
-        return SnesFrameBuffer.SnesColorToArgb(snesColor);
+        return (SnesFrameBuffer.SnesColorToArgb(snesColor), priority);
     }
 
     /// <summary>
     /// Samples a 4bpp background layer at screen coordinate (x, y).
     /// </summary>
     private uint SampleBgLayer4bpp(int layer, int x, int y)
+        => SampleBgLayer4bppWithPriority(layer, x, y).Color;
+
+    private (uint Color, bool Priority) SampleBgLayer4bppWithPriority(int layer, int x, int y)
     {
         byte sc = GetBgSc(layer);
         int tileSize = GetBgTileSize(layer);
@@ -410,10 +452,11 @@ public sealed class Ppu : IPpu
         int pixY  = mapY % tileSize;
 
         int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
-        if (tilemapAddr + 1 >= _vram.Length) return 0;
+        if (tilemapAddr + 1 >= _vram.Length) return (0, false);
 
         ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
         int tileNum  = entry & 0x03FF;
+        bool priority = (entry & 0x2000) != 0;
         bool hflip   = (entry & 0x4000) != 0;
         bool vflip   = (entry & 0x8000) != 0;
         int palette  = (entry >> 10) & 0x07;
@@ -422,7 +465,7 @@ public sealed class Ppu : IPpu
 
         int charBase = GetBgCharBase(layer);
         int tileAddr = charBase + tileNum * 32 + tpy * 2;
-        if (tileAddr + 17 >= _vram.Length) return 0;
+        if (tileAddr + 17 >= _vram.Length) return (0, false);
 
         byte p0lo = _vram[tileAddr];
         byte p0hi = _vram[tileAddr + 1];
@@ -435,13 +478,13 @@ public sealed class Ppu : IPpu
                        | (((p1lo >> shift) & 1) << 2)
                        | (((p1hi >> shift) & 1) << 3);
 
-        if (colorIndex == 0) return 0;
+        if (colorIndex == 0) return (0, false);
 
         int paletteBase = (palette * 16 + colorIndex) * 2;
-        if (paletteBase + 1 >= _cgram.Length) return 0xFF808080;
+        if (paletteBase + 1 >= _cgram.Length) return (0xFF808080, priority);
 
         ushort snesColor = (ushort)(_cgram[paletteBase] | (_cgram[paletteBase + 1] << 8));
-        return SnesFrameBuffer.SnesColorToArgb(snesColor);
+        return (SnesFrameBuffer.SnesColorToArgb(snesColor), priority);
     }
 
     private uint RenderMode7Pixel(int x, int y, uint bgColor)
