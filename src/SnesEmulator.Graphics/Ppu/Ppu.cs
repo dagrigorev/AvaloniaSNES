@@ -94,6 +94,8 @@ public sealed class Ppu : IPpu
 
     // OAM internal pointer
     private ushort _oamPointer;
+    private byte _oamWriteLatch;
+    private bool _oamWriteLowPending;
 
     // BG scroll registers share a single previous-byte latch across all BGnHOFS/BGnVOFS writes.
     // This matches the SNES write-twice behaviour closely enough for common boot/title code.
@@ -141,6 +143,8 @@ public sealed class Ppu : IPpu
         _cgadd = 0;
         _bgScrollPrevByte = 0;
         _oamPointer = 0;
+        _oamWriteLatch = 0;
+        _oamWriteLowPending = false;
         _frameBuffer.Clear();
         _stat77 = 0;
         _stat78 = 0x01;
@@ -240,6 +244,13 @@ public sealed class Ppu : IPpu
         {
             // Other modes: use backdrop + BG1 if enabled, basic rendering
             pixelColor = RenderFallbackPixel(x, y, bgColor);
+        }
+
+        if ((_tm & 0x10) != 0)
+        {
+            uint objColor = SampleObjPixel(x, y);
+            if ((objColor & 0xFF000000) != 0)
+                pixelColor = objColor;
         }
 
         // Apply brightness scaling
@@ -410,6 +421,80 @@ public sealed class Ppu : IPpu
         return SnesFrameBuffer.SnesColorToArgb(snesColor);
     }
 
+
+    private uint SampleObjPixel(int x, int y)
+    {
+        for (int spriteIndex = 0; spriteIndex < 128; spriteIndex++)
+        {
+            int low = spriteIndex * 4;
+            int xLow = _oam[low];
+            int spriteY = _oam[low + 1];
+            int tileBase = _oam[low + 2];
+            byte attr = _oam[low + 3];
+
+            int highTableByte = _oam[512 + (spriteIndex >> 2)];
+            int shift = (spriteIndex & 0x03) * 2;
+            int xHigh = (highTableByte >> shift) & 0x01;
+            bool large = ((highTableByte >> (shift + 1)) & 0x01) != 0;
+
+            int spriteX = xLow | (xHigh << 8);
+            if (spriteX >= 256)
+                spriteX -= 512;
+
+            (int spriteWidth, int spriteHeight) = GetObjSize(large);
+
+            int relY = (y - spriteY + 256) & 0xFF;
+            if (relY >= spriteHeight)
+                continue;
+
+            int relX = x - spriteX;
+            if (relX < 0 || relX >= spriteWidth)
+                continue;
+
+            bool vflip = (attr & 0x80) != 0;
+            bool hflip = (attr & 0x40) != 0;
+            int palette = (attr >> 1) & 0x07;
+            bool nameTable = (attr & 0x01) != 0;
+
+            int effX = hflip ? spriteWidth - 1 - relX : relX;
+            int effY = vflip ? spriteHeight - 1 - relY : relY;
+
+            int subTileX = effX >> 3;
+            int subTileY = effY >> 3;
+            int tilePixelX = effX & 7;
+            int tilePixelY = effY & 7;
+            int tileIndex = (tileBase + subTileX + subTileY * 16) & 0xFF;
+
+            int tileByteAddress = GetObjTileByteAddress(tileIndex, nameTable) + tilePixelY * 2;
+            if (tileByteAddress + 17 >= _vram.Length)
+                continue;
+
+            byte p0lo = _vram[tileByteAddress];
+            byte p0hi = _vram[tileByteAddress + 1];
+            byte p1lo = _vram[tileByteAddress + 16];
+            byte p1hi = _vram[tileByteAddress + 17];
+
+            int bit = 7 - tilePixelX;
+            int colorIndex = ((p0lo >> bit) & 1)
+                           | (((p0hi >> bit) & 1) << 1)
+                           | (((p1lo >> bit) & 1) << 2)
+                           | (((p1hi >> bit) & 1) << 3);
+
+            if (colorIndex == 0)
+                continue;
+
+            int cgramIndex = 128 + palette * 16 + colorIndex;
+            int cgramAddr = cgramIndex * 2;
+            if (cgramAddr + 1 >= _cgram.Length)
+                return 0;
+
+            ushort snesColor = (ushort)(_cgram[cgramAddr] | (_cgram[cgramAddr + 1] << 8));
+            return SnesFrameBuffer.SnesColorToArgb(snesColor);
+        }
+
+        return 0;
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static int WrapBgCoordinate(int value, int size)
@@ -491,6 +576,28 @@ public sealed class Ppu : IPpu
         return (baseAddress + screen * 0x800 + (localY * 32 + localX) * 2) & 0xFFFF;
     }
 
+
+    private (int Width, int Height) GetObjSize(bool large)
+    {
+        return ((_obsel >> 5) & 0x07) switch
+        {
+            0 => large ? (16, 16) : (8, 8),
+            1 => large ? (32, 32) : (8, 8),
+            2 => large ? (64, 64) : (8, 8),
+            3 => large ? (32, 32) : (16, 16),
+            4 => large ? (64, 64) : (16, 16),
+            5 => large ? (64, 64) : (32, 32),
+            6 => large ? (32, 64) : (16, 32),
+            _ => large ? (32, 32) : (16, 32)
+        };
+    }
+
+    private int GetObjTileByteAddress(int tileIndex, bool nameTable)
+    {
+        int baseWordAddress = (((_obsel & 0x07) << 13) + (tileIndex << 4) + (nameTable ? ((((_obsel >> 3) & 0x03) + 1) << 12) : 0)) & 0x7FFF;
+        return (baseWordAddress << 1) & 0xFFFF;
+    }
+
     private int GetBgCharBase(int layer)
     {
         byte nba = layer < 2 ? _bg12nba : _bg34nba;
@@ -547,7 +654,11 @@ public sealed class Ppu : IPpu
                         _inidisp, value, (value & 0x80) != 0 ? "BLANKED" : $"ON brightness={value & 0x0F}");
                 _inidisp = value;
                 break;
-            case 0x01: _obsel = value; break;
+            case 0x01:
+                if (_obsel != value)
+                    _logger.LogDebug("OBSEL: ${Old:X2} → ${New:X2}", _obsel, value);
+                _obsel = value;
+                break;
             case 0x02: _oamadd = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); break;
             case 0x03: _oamaddh = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); break;
             case 0x04: WriteOam(value); break;
@@ -670,8 +781,28 @@ public sealed class Ppu : IPpu
 
     private void WriteOam(byte value)
     {
-        if (_oamPointer < _oam.Length)
+        if (_oamPointer < 512)
+        {
+            if ((_oamPointer & 1) == 0)
+            {
+                _oamWriteLatch = value;
+                _oamWriteLowPending = true;
+            }
+            else
+            {
+                int baseAddr = _oamPointer - 1;
+                if (baseAddr < _oam.Length)
+                    _oam[baseAddr] = _oamWriteLowPending ? _oamWriteLatch : (byte)0;
+                if (_oamPointer < _oam.Length)
+                    _oam[_oamPointer] = value;
+                _oamWriteLowPending = false;
+            }
+        }
+        else if (_oamPointer < _oam.Length)
+        {
             _oam[_oamPointer] = value;
+        }
+
         _oamPointer = (ushort)((_oamPointer + 1) & 0x3FF);
     }
 

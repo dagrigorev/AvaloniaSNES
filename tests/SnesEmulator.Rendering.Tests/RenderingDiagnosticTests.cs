@@ -610,3 +610,93 @@ public sealed class TrackingMemory
     public TrackingMemory(List<(uint, byte)> writes) => _writes = writes;
     public void Write(uint addr, byte value) => _writes.Add((addr, value));
 }
+
+
+
+public sealed class SpriteRenderingTests
+{
+    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+
+    [Fact]
+    public void ObjPixel_IsRendered_WhenObjLayerEnabled()
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x01, 0x00); // OBSEL: 8x8/16x16, base 0
+        ppu.WriteRegister(0x2C, 0x10); // TM: OBJ enabled
+
+        // Sprite palette 0, color 1 = red. OBJ palettes live in CGRAM 128..255.
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+
+        // Tile 0 row 0, pixel 0 = color 1.
+        WriteVramByte(ppu, 0, 0x80);
+        WriteVramByte(ppu, 1, 0x00);
+        WriteVramByte(ppu, 16, 0x00);
+        WriteVramByte(ppu, 17, 0x00);
+
+        // Sprite 0 at (0,0), tile 0, palette 0.
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+        ppu.WriteRegister(0x04, 0x00); // X low
+        ppu.WriteRegister(0x04, 0x00); // Y
+        ppu.WriteRegister(0x04, 0x00); // tile
+        ppu.WriteRegister(0x04, 0x00); // attr
+
+        ppu.Clock(4);
+
+        ppu.FrameBuffer.Pixels[0].Should().NotBe(0xFF000000u);
+    }
+
+    [Fact]
+    public void OamLowTable_WordBufferedWrites_CommitOnSecondByte()
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+        ppu.WriteRegister(0x04, 0x34);
+
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+        ppu.ReadRegister(0x38).Should().Be(0x00, "low-table OAM writes should not commit until the second byte of the word is written");
+
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+        ppu.WriteRegister(0x04, 0x34);
+        ppu.WriteRegister(0x04, 0x12);
+
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+        ppu.ReadRegister(0x38).Should().Be(0x34);
+        ppu.ReadRegister(0x38).Should().Be(0x12);
+    }
+
+    private static void WriteVramByte(Ppu ppu, int byteAddr, byte value)
+    {
+        int wordAddr = byteAddr / 2;
+        bool isHigh  = (byteAddr & 1) != 0;
+        ppu.WriteRegister(0x15, (byte)(isHigh ? 0x80 : 0x00));
+        ppu.WriteRegister(0x16, (byte)(wordAddr & 0xFF));
+        ppu.WriteRegister(0x17, (byte)(wordAddr >> 8));
+        if (isHigh)
+        {
+            ppu.WriteRegister(0x18, 0x00);
+            ppu.WriteRegister(0x19, value);
+        }
+        else
+        {
+            ppu.WriteRegister(0x18, value);
+            ppu.WriteRegister(0x19, 0x00);
+        }
+    }
+
+    private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
+    {
+        ppu.WriteRegister(0x21, (byte)colorIndex);
+        ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
+        ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+}
