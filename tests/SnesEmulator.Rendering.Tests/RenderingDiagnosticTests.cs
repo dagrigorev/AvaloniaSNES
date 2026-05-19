@@ -1214,6 +1214,38 @@ public sealed class ObjSizeTableTests
         inside.Should().Be(SnesFrameBuffer.SnesColorToArgb(0x001F));
         outside.Should().Be(0xFF000000u); // backdrop/transparent
     }
+
+    [Fact]
+    public void ObelBaseNonZero_SpriteTileFetchesFromCorrectVramAddress()
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        // OBSEL = $01 => base = 1 * $2000 = $2000 bytes = $1000 words
+        // bits 7-5 = 0 (8x8/16x16), bits 4-3 = 0, bits 2-0 = 1
+        ppu.WriteRegister(0x01, (byte)(0 << 5 | 0 << 3 | 1));
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x2C, 0x10); // OBJ enabled
+
+        // Sprite 0 at (0,0), tile 0, attr=0x20 (priority 2)
+        WriteOamEntry(ppu, 0, 0, 0, 0, 0x20);
+        SetHighTableBits(ppu, 0, false, false);
+
+        // Write tile 0 data at VRAM word $1000 (OBSEL base $2000 bytes = $1000 words)
+        // row 0 pixel 0 = color 1
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, 0x00);
+        ppu.WriteRegister(0x17, 0x10); // word address $1000
+        ppu.WriteRegister(0x18, 0x80);
+        ppu.WriteRegister(0x19, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // red
+
+        ppu.Clock(4);
+
+        uint pixel = ppu.FrameBuffer.Pixels[0];
+        pixel.Should().Be(SnesFrameBuffer.SnesColorToArgb(0x001F));
+    }
 }
 
 public sealed class Mode2OffsetTests

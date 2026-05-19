@@ -974,7 +974,7 @@ public sealed class Ppu : IPpu
 
     private int GetObjTileByteAddress(int tileIndex, bool nameTable)
     {
-        int baseWordAddress = (((_obsel & 0x07) << 13) + (tileIndex << 4) + (nameTable ? ((((_obsel >> 3) & 0x03) + 1) << 12) : 0)) & 0x7FFF;
+        int baseWordAddress = (((_obsel & 0x07) << 12) + (tileIndex << 4) + (nameTable ? ((((_obsel >> 3) & 0x03) + 1) << 11) : 0)) & 0x7FFF;
         return (baseWordAddress << 1) & 0xFFFF;
     }
 
