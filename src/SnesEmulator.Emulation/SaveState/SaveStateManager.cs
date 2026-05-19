@@ -8,23 +8,28 @@ namespace SnesEmulator.Emulation.SaveState;
 /// Manages save state serialization and deserialization.
 /// A save state is a snapshot of all stateful components at a given point in time.
 ///
-/// File format (binary):
+/// File format (binary), version 2:
 ///   [4 bytes]  Magic: "SNES"
-///   [4 bytes]  Version: 1
-///   [4 bytes]  CPU state length
+///   [4 bytes]  FormatVersion (int32, big-endian)
+///   [4 bytes]  CPU state data length
 ///   [N bytes]  CPU state data
-///   [4 bytes]  PPU state length
+///   [4 bytes]  PPU state data length
 ///   [N bytes]  PPU state data
-///   [4 bytes]  APU state length
+///   [4 bytes]  APU state data length
 ///   [N bytes]  APU state data
-///   [4 bytes]  WRAM state length
+///   [4 bytes]  WRAM state data length
 ///   [N bytes]  WRAM state data
+///
+/// Version history:
+///   1 — initial format (unused, no migration needed)
+///   2 — current; transactional load, length bounds checking
 /// </summary>
 public sealed class SaveStateManager
 {
     private readonly ILogger<SaveStateManager> _logger;
     private static readonly byte[] Magic = "SNES"u8.ToArray();
-    private const int FormatVersion = 1;
+    private const int FormatVersion = 2;
+    private const int MinSupportedVersion = 2;
 
     public SaveStateManager(ILogger<SaveStateManager> logger)
     {
@@ -60,7 +65,10 @@ public sealed class SaveStateManager
     }
 
     /// <summary>
-    /// Loads emulator state from a file.
+    /// Loads emulator state from a file. Uses transactional read:
+    /// all component data is deserialised from the file first, then
+    /// applied to components. If deserialisation fails, no component
+    /// state is mutated.
     /// </summary>
     public void LoadState(string filePath, ICpu cpu, IPpu ppu, IApu apu, IStateful wram)
     {
@@ -77,21 +85,37 @@ public sealed class SaveStateManager
             if (!magic.SequenceEqual(Magic))
                 throw new SaveStateException("Invalid save state file (bad magic).");
 
-            // Validate version
+            // Validate version (range check for future/old compatibility)
             int version = reader.ReadInt32();
-            if (version != FormatVersion)
-                throw new SaveStateException($"Unsupported save state version {version} (expected {FormatVersion}).");
+            if (version > FormatVersion)
+                throw new SaveStateException(
+                    $"Save state version {version} is from a newer emulator version (max supported: {FormatVersion}). " +
+                    $"Please update the emulator.");
+            if (version < MinSupportedVersion)
+                throw new SaveStateException(
+                    $"Save state version {version} is too old (minimum supported: {MinSupportedVersion}).");
 
-            cpu.LoadState(ReadSection(reader));
-            ppu.LoadState(ReadSection(reader));
-            apu.LoadState(ReadSection(reader));
-            wram.LoadState(ReadSection(reader));
+            // Transactional read: deserialise all sections before mutating components
+            byte[] cpuData   = ReadSection(reader);
+            byte[] ppuData   = ReadSection(reader);
+            byte[] apuData   = ReadSection(reader);
+            byte[] wramData  = ReadSection(reader);
+
+            // Apply — safe after all reads succeeded
+            cpu.LoadState(cpuData);
+            ppu.LoadState(ppuData);
+            apu.LoadState(apuData);
+            wram.LoadState(wramData);
 
             _logger.LogInformation("Save state loaded: {Path}", filePath);
         }
         catch (SaveStateException)
         {
             throw;
+        }
+        catch (EndOfStreamException)
+        {
+            throw new SaveStateException("Save state file is truncated or corrupted.");
         }
         catch (Exception ex)
         {
@@ -108,6 +132,15 @@ public sealed class SaveStateManager
     private static byte[] ReadSection(BinaryReader reader)
     {
         int length = reader.ReadInt32();
-        return reader.ReadBytes(length);
+
+        if (length < 0)
+            throw new SaveStateException($"Corrupted save state: negative section length ({length}).");
+        if (length > 10 * 1024 * 1024)
+            throw new SaveStateException($"Corrupted save state: section length ({length}) exceeds maximum allowed (10 MiB).");
+
+        byte[] data = reader.ReadBytes(length);
+        if (data.Length != length)
+            throw new SaveStateException($"Corrupted save state: section data truncated (expected {length} bytes, got {data.Length}).");
+        return data;
     }
 }
