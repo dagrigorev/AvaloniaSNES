@@ -13,9 +13,12 @@ namespace SnesEmulator.Audio.Apu;
 ///   4. APU echoes $CC on port0
 ///   5. For each data block: CPU writes address (port2/3), data (port1),
 ///      then increments a counter on port0. APU echoes the counter.
-///   6. CPU sends $00 on port0 when done → APU jumps to loaded code
+///   6. After transfer, APU jumps to loaded code and sets $AA/$BB running signal
 ///
-/// Our stub handles all phases so games proceed past audio init.
+/// Our stub echoes all writes during transfer so polling loops match.
+/// After N idle reads (no writes), it auto-responds with $AA/$BB to
+/// simulate the SPC700 running signal, allowing games to proceed past
+/// SPC700 init without actual SPC700 emulation.
 /// </summary>
 public sealed class Apu : IApu
 {
@@ -28,9 +31,13 @@ public sealed class Apu : IApu
     private long _masterCycleAccum;
 
     // Handshake state machine
-    private enum HandshakePhase { WaitingForCC, Transferring, Done }
+    private enum HandshakePhase { WaitingForCC, Transferring, Busy, Ready }
     private HandshakePhase _phase;
-    private byte _lastCounter; // tracks the incrementing port0 counter
+    private byte _lastCounter;
+
+    // After this many consecutive reads without any write, signal ready ($AA/$BB)
+    private const int IdleReadThreshold = 500;
+    private int _readsSinceLastWrite;
 
     public string Name => "APU (SPC700 + DSP)";
 
@@ -44,6 +51,7 @@ public sealed class Apu : IApu
         _masterCycleAccum = 0;
         _phase            = HandshakePhase.WaitingForCC;
         _lastCounter      = 0;
+        _readsSinceLastWrite = 0;
 
         // Signal APU ready: port0=$AA, port1=$BB
         _portsFromApu[0] = 0xAA;
@@ -58,6 +66,22 @@ public sealed class Apu : IApu
     public byte ReadPort(byte port)
     {
         if (port > 3) return 0xFF;
+
+        // Auto-detect end of transfer: after many idle reads without writes,
+        // switch to ready-signal mode ($AA/$BB) so games that poll for the
+        // SPC700 running signal can proceed.
+        if (_phase == HandshakePhase.Transferring || _phase == HandshakePhase.Busy)
+        {
+            _readsSinceLastWrite++;
+            if (_readsSinceLastWrite >= IdleReadThreshold)
+            {
+                _phase = HandshakePhase.Ready;
+                _portsFromApu[0] = 0xAA;
+                _portsFromApu[1] = 0xBB;
+                _logger.LogDebug("APU: auto-detect idle -> ready ($AA/$BB)");
+            }
+        }
+
         return _portsFromApu[port];
     }
 
@@ -65,14 +89,14 @@ public sealed class Apu : IApu
     {
         if (port > 3) return;
         _portsFromCpu[port] = value;
+        _readsSinceLastWrite = 0;
 
         switch (_phase)
         {
             case HandshakePhase.WaitingForCC:
-                // CPU writes $CC to acknowledge the $AA/$BB ready signal
                 if (port == 0 && value == 0xCC)
                 {
-                    _portsFromApu[0] = 0xCC; // Echo $CC back
+                    _portsFromApu[0] = 0xCC;
                     _phase           = HandshakePhase.Transferring;
                     _lastCounter     = 0;
                     _logger.LogDebug("APU: IPL handshake complete, entering transfer phase");
@@ -80,31 +104,13 @@ public sealed class Apu : IApu
                 break;
 
             case HandshakePhase.Transferring:
-                if (port == 0)
-                {
-                    if (value == 0x00)
-                    {
-                        // Transfer complete — CPU tells APU to execute
-                        _portsFromApu[0] = 0x00;
-                        _phase           = HandshakePhase.Done;
-                        _logger.LogDebug("APU: Transfer done, executing uploaded code");
-                    }
-                    else
-                    {
-                        // CPU sends incrementing counter — echo it immediately
-                        _portsFromApu[0] = value;
-                        _lastCounter     = value;
-                    }
-                }
-                else
-                {
-                    // Echo ports 1-3 so address/data writes don't stall
-                    _portsFromApu[port] = value;
-                }
+            case HandshakePhase.Busy:
+                _portsFromApu[port] = value;
                 break;
 
-            case HandshakePhase.Done:
-                // Post-init: echo everything so games that poll ports don't hang
+            case HandshakePhase.Ready:
+                // Game is writing again — switch back to transfer echo mode
+                _phase = HandshakePhase.Transferring;
                 _portsFromApu[port] = value;
                 break;
         }
@@ -122,6 +128,7 @@ public sealed class Apu : IApu
         bw.Write(_apuRam);
         bw.Write((byte)_phase);
         bw.Write(_lastCounter);
+        bw.Write(_readsSinceLastWrite);
         return ms.ToArray();
     }
 
@@ -132,7 +139,8 @@ public sealed class Apu : IApu
         br.Read(_portsFromCpu);
         br.Read(_portsFromApu);
         br.Read(_apuRam);
-        _phase       = (HandshakePhase)br.ReadByte();
-        _lastCounter = br.ReadByte();
+        _phase              = (HandshakePhase)br.ReadByte();
+        _lastCounter        = br.ReadByte();
+        _readsSinceLastWrite = state.Length >= ms.Position + 4 ? br.ReadInt32() : 0;
     }
 }

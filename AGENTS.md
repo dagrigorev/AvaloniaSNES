@@ -18,7 +18,9 @@ This repository is a C#/.NET 8 SNES emulator with Avalonia desktop UI. Agents mu
 
 ## Current product state
 
-The project already has a usable emulator foundation: ROM loader, 65C816 opcode table, WRAM/memory bus, basic PPU rendering, input, save states, diagnostics and Avalonia UI. It is not yet a high-compatibility commercial SNES emulator.
+The project has a usable emulator foundation: ROM loader, 65C816 opcode table, WRAM/memory bus, PPU rendering (Mode 0/1 with BG/OBJ priority composition), input, save states, diagnostics and Avalonia UI. It is not yet a high-compatibility commercial SNES emulator.
+
+All 168 tests across 4 test projects pass (Core: 41, Emulation: 75, Hardware: 9, Rendering: 43).
 
 Most important unfinished work:
 

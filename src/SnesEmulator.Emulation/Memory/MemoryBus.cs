@@ -56,6 +56,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private int _ioTraceCount;
     private int _vblankTraceCount;
     private int _nmiReadTraceCount;
+    public int NmiFireCount; // diagnostics: how many times ConsumeNmi returned true
 
     public string Name => "MemoryBus";
 
@@ -104,7 +105,8 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _traceScanline   = -1;
         _ioTraceCount    = 0;
         _vblankTraceCount = 0;
-        _nmiReadTraceCount = 0;
+        _nmiReadTraceCount    = 0;
+        NmiFireCount          = 0;
         _lastBusValue    = 0xFF;
         Array.Clear(_dmaRegisters);
     }
@@ -121,6 +123,8 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             ((inVBlank ? 0x80 : 0x00) |
              (inHBlank ? 0x40 : 0x00));
     }
+
+    public byte NmitimenRead() => _nmitimen;
 
     public void SetCpuTraceContext(byte pbr, ushort pc)
     {
@@ -178,6 +182,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             return false;
 
         _nmiPending = false;
+        NmiFireCount++;
 
         if (_vblankTraceCount < 512)
         {
