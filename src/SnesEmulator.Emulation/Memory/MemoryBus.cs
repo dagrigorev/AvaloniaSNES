@@ -40,6 +40,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private bool _rdnmiLatched;
     private bool _nmiPending;
     private bool _nmiScheduledThisVblank;
+    private bool _irqFlag;
     private byte _wrio;       // $4201 — Joypad programmable I/O port
     private byte _wrmpya;     // $4202 — Multiplicand
     private byte _wrmpyb;     // $4203 — Multiplier
@@ -92,6 +93,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _nmiPending      = false;
         _nmiScheduledThisVblank = false;
         _hvbjoy          = 0;
+        _irqFlag         = false;
         _wrdiva          = 0;
         _rddiv           = 0;
         _rdmpy           = 0;
@@ -187,6 +189,8 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     }
 
     public void ClearNmiFlag() => _rdnmiLatched = false;
+
+    public void SetIrqFlag() => _irqFlag = true;
 
     // ── IMemoryBus ────────────────────────────────────────────────────────────
 
@@ -359,7 +363,12 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                 _rdnmiLatched = false;
                 return val;
             }
-            case 0x4211: return 0x00;   // TIMEUP: IRQ flag (not implemented)
+            case 0x4211:
+            {
+                byte val = (byte)(_irqFlag ? 0x80 : 0x00);
+                _irqFlag = false;
+                return val;
+            }
             case 0x4212:
             {
                 if (_nmiReadTraceCount < 256)

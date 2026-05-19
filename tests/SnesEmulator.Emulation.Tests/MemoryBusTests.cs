@@ -202,6 +202,52 @@ public sealed class MemoryBusTests
     }
 
     [Fact]
+    public void Read4211_WithoutIrq_ReturnsZero()
+    {
+        var bus = CreateBus();
+        bus.Read(0x004211).Should().Be(0x00);
+    }
+
+    [Fact]
+    public void Read4211_SetThenRead_ClearsFlag()
+    {
+        var bus = CreateBus();
+        bus.SetIrqFlag();
+
+        bus.Read(0x004211).Should().Be(0x80);
+        bus.Read(0x004211).Should().Be(0x00);
+    }
+
+    [Fact]
+    public void Read4211_RepeatedReads_AlwaysClearAfterFirstRead()
+    {
+        var bus = CreateBus();
+        bus.SetIrqFlag();
+
+        bus.Read(0x004211).Should().Be(0x80);
+        bus.Read(0x004211).Should().Be(0x00);
+        bus.Read(0x004211).Should().Be(0x00);
+
+        bus.SetIrqFlag();
+        bus.Read(0x004211).Should().Be(0x80);
+        bus.Read(0x004211).Should().Be(0x00);
+    }
+
+    [Fact]
+    public void Rdnmi_RepeatedReads_Deterministic()
+    {
+        var bus = CreateBus();
+
+        bus.Write(0x004200, 0x80);
+        bus.SetVBlankState(true, 0, 225);
+
+        bus.Read(0x004210).Should().Be(0x82);
+        bus.Read(0x004210).Should().Be(0x02);
+        bus.Read(0x004210).Should().Be(0x02);
+        bus.Read(0x004210).Should().Be(0x02);
+    }
+
+    [Fact]
     public void Hvbjoy_ReflectsCurrentVblankAndHblankBits()
     {
         var bus = CreateBus();
