@@ -102,8 +102,50 @@ public sealed class MemoryBusTests
     public void UnmappedRead_ReturnsOpenBus()
     {
         var bus = CreateBus();
-        // Reading unmapped area should return 0xFF (open bus)
+        // After reset, open bus defaults to 0xFF (SNES pull-up)
         bus.Read(0x400000).Should().Be(0xFF);
+    }
+
+    [Fact]
+    public void UnmappedRead_ReturnsLastBusValue_AfterValidRead()
+    {
+        var bus = CreateBus();
+        bus.Write(0x7E0000, 0x42);
+        bus.Read(0x7E0000).Should().Be(0x42);
+
+        // Unmapped read should now return 0x42 (last bus value from read)
+        bus.Read(0x400000).Should().Be(0x42);
+    }
+
+    [Fact]
+    public void UnmappedRead_ReturnsLastBusValue_AfterWrite()
+    {
+        var bus = CreateBus();
+        bus.Write(0x7E0000, 0xA5);
+
+        // Unmapped read should return 0xA5 (last bus value from write)
+        bus.Read(0x400000).Should().Be(0xA5);
+    }
+
+    [Fact]
+    public void UnmappedRead_ReturnsLastBusValue_AfterRegisterRead()
+    {
+        var bus = CreateBus();
+        // Read $4210 to get version bits, which updates bus
+        bus.Write(0x004200, 0x80);
+        bus.SetVBlankState(true, 0, 225);
+        bus.Read(0x004210).Should().Be(0x82);
+
+        // Unmapped read returns last register value
+        bus.Read(0x400000).Should().Be(0x82);
+    }
+
+    [Fact]
+    public void UnmappedRead_ReturnsLastBusValue_AfterUnmappedRead()
+    {
+        var bus = CreateBus();
+        bus.Read(0x400000).Should().Be(0xFF);
+        bus.Read(0x500000).Should().Be(0xFF);
     }
 
     [Fact]

@@ -164,3 +164,19 @@ For each CPU instruction:
 Each CPU instruction consumes a known number of cycles. The PPU converts master cycles to dots (÷4) and advances its scanline/dot counter. NMI is triggered once per frame when the PPU transitions to V-blank.
 
 This is not cycle-accurate (does not interleave PPU dots within a CPU instruction) but maintains correct average timing.
+
+---
+
+## Open Bus Behavior
+
+The SNES data bus retains the last value read or written by the CPU. Reading from an unmapped address returns this held value rather than a fixed constant.
+
+### Current Implementation
+
+The `MemoryBus` tracks `_lastBusValue` which is updated on every CPU read (with the value returned) and every CPU write (with the value written). On reset, `_lastBusValue` = `0xFF` (SNES pull-up default).
+
+### Known Limitations
+
+- **Mixed open-bus bits in PPU/APU/controller registers**: On real hardware, some registers return a combination of register bits and open-bus bits (e.g., `$213E` STAT78 has open-bus bits 6–7, `$4016`/`$4017` have fixed-high bits 2–4). Our implementation returns the full register value without open-bus bit masking.
+- **DMA bus value**: DMA transfers also drive the data bus but our model does not capture intermediate DMA bus values.
+- **Read-modify-write instructions**: Instructions like `INC addr`, `DEC addr`, `ASL addr` etc. perform a read, modify, then write. The open bus is updated with each bus cycle, but our single-read-through model captures only the final write value.

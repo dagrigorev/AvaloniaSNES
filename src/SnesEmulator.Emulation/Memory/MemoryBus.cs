@@ -48,6 +48,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private ushort _rddiv;    // $4214/15 — Divide result
     private ushort _wrdiva;   // $4204/05 — latched dividend for division
 
+    private byte _lastBusValue = 0xFF;
     private byte _lastCpuPbr;
     private ushort _lastCpuPc;
     private int _traceFrame = -1;
@@ -104,6 +105,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _ioTraceCount    = 0;
         _vblankTraceCount = 0;
         _nmiReadTraceCount = 0;
+        _lastBusValue    = 0xFF;
         Array.Clear(_dmaRegisters);
     }
 
@@ -201,7 +203,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
         if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))
         {
-            return offset switch
+            return CaptureBus(offset switch
             {
                 <= 0x1FFF               => _wram.ReadDirect(offset),
                 >= 0x2100 and <= 0x213F => ReadPpuRegister(offset),
@@ -212,20 +214,27 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                 >= 0x4300 and <= 0x43FF => ReadDmaRegister(offset),
                 >= 0x8000               => ReadRom(bank, offset),
                 _                       => TryReadSram(bank, offset)
-            };
+            });
         }
 
         if (bank == 0x7E || bank == 0x7F)
-            return _wram.ReadDirect(((bank & 1) << 16) | offset);
+            return CaptureBus(_wram.ReadDirect(((bank & 1) << 16) | offset));
 
         if ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0)
-            return ReadRom(bank, offset);
+            return CaptureBus(ReadRom(bank, offset));
 
-        return TryReadSram(bank, offset);
+        return CaptureBus(TryReadSram(bank, offset));
+    }
+
+    private byte CaptureBus(byte value)
+    {
+        _lastBusValue = value;
+        return value;
     }
 
     public void Write(uint address, byte value)
     {
+        _lastBusValue = value;
         byte bank = BitHelper.BankOf(address);
         ushort offset = BitHelper.OffsetOf(address);
 
@@ -600,7 +609,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             _ => 0
         };
 
-    private static byte OpenBus() => 0xFF;
+    private byte OpenBus() => _lastBusValue;
 
     public void SaveSram(string path)
     {
