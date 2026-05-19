@@ -54,6 +54,11 @@ Desktop.ini
 *.sfc
 *.spc
 *.fig
+roms/
+
+## Logs and screenshots (user specific)
+logs/
+screenshots/
 
 ## Save states / configs (user specific)
 saves/
