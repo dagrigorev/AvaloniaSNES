@@ -49,6 +49,7 @@ public sealed class Ppu : IPpu
     private const int MasterCyclesPerDot = 4;
     private readonly uint[] _objScanlineBuffer = new uint[SnesConstants.ScreenWidth];
     private readonly bool[] _objScanlineOpaque = new bool[SnesConstants.ScreenWidth];
+    private readonly byte[] _objScanlinePriority = new byte[SnesConstants.ScreenWidth];
     private int _preparedObjScanline = -1;
 
     // ── PPU Registers ─────────────────────────────────────────────────────────
@@ -578,6 +579,7 @@ public sealed class Ppu : IPpu
 
         Array.Clear(_objScanlineOpaque, 0, _objScanlineOpaque.Length);
         Array.Clear(_objScanlineBuffer, 0, _objScanlineBuffer.Length);
+        Array.Clear(_objScanlinePriority, 0, _objScanlinePriority.Length);
 
         for (int spriteIndex = 127; spriteIndex >= 0; spriteIndex--)
         {
@@ -597,11 +599,13 @@ public sealed class Ppu : IPpu
                 spriteX -= 512;
 
             (int spriteWidth, int spriteHeight) = GetObjSize(large);
+            int tilesAcross = spriteWidth >> 3;
 
             int relY = (y - spriteY + 256) & 0xFF;
             if (relY >= spriteHeight)
                 continue;
 
+            int spritePriority = (attr >> 4) & 0x03;
             bool vflip = (attr & 0x80) != 0;
             bool hflip = (attr & 0x40) != 0;
             int palette = (attr >> 1) & 0x07;
@@ -622,7 +626,13 @@ public sealed class Ppu : IPpu
                 int effX = hflip ? spriteWidth - 1 - relX : relX;
                 int subTileX = effX >> 3;
                 int tilePixelX = effX & 7;
-                int tileIndex = (tileBase + subTileX + subTileY * 16) & 0xFF;
+
+                // Priority check: only overwrite if this sprite has >= priority.
+                // Iteration 127→0 means lower sprite index (processed later) wins ties.
+                if (spritePriority < _objScanlinePriority[screenX])
+                    continue;
+
+                int tileIndex = (tileBase + subTileX + subTileY * tilesAcross) & 0xFF;
 
                 int tileByteAddress = GetObjTileByteAddress(tileIndex, nameTable) + tilePixelY * 2;
                 if (tileByteAddress + 17 >= _vram.Length)
@@ -650,6 +660,7 @@ public sealed class Ppu : IPpu
                 ushort snesColor = (ushort)(_cgram[cgramAddr] | (_cgram[cgramAddr + 1] << 8));
                 _objScanlineBuffer[screenX] = SnesFrameBuffer.SnesColorToArgb(snesColor);
                 _objScanlineOpaque[screenX] = true;
+                _objScanlinePriority[screenX] = (byte)spritePriority;
             }
         }
 
@@ -820,8 +831,8 @@ public sealed class Ppu : IPpu
                     _logger.LogDebug("OBSEL: ${Old:X2} → ${New:X2}", _obsel, value);
                 _obsel = value;
                 break;
-            case 0x02: _oamadd = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); InvalidateObjCache(); break;
-            case 0x03: _oamaddh = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 1) << 8)); InvalidateObjCache(); break;
+            case 0x02: _oamadd = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 0x03) << 8)); InvalidateObjCache(); break;
+            case 0x03: _oamaddh = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 0x03) << 8)); InvalidateObjCache(); break;
             case 0x04: WriteOam(value); InvalidateObjCache(); break;
             case 0x05:
                 if (_bgmode != value)
