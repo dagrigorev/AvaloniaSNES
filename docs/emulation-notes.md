@@ -92,7 +92,7 @@ $C0-$FF : Full ROM banks (upper)
 | 6    | 4bpp   | —      | OPT    | —      |
 | 7    | 8bpp+rot| —     | —      | —      |
 
-Implemented: **Mode 0** (fully functional) and **Mode 1** (BG1/BG2 rendering).
+Implemented: **Mode 0** (fully functional), **Mode 1** (full priority composition, BG3-high toggle), **Mode 2** (offset-per-tile for BG1 via BG2 tilemap lower byte).
 
 ### Tile Format
 

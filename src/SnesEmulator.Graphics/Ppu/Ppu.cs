@@ -231,11 +231,19 @@ public sealed class Ppu : IPpu
             _frameCount));
     }
 
-    // ── Pixel rendering ───────────────────────────────────────────────────────
+    // ── Priority composition ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Represents a pixel sampled from any layer with its SNES priority level.
+    /// Lower Priority value = higher on-screen priority.
+    /// </summary>
+    private readonly record struct PixelCandidate(uint Color, int Priority)
+    {
+        public bool IsTransparent => (Color & 0xFF000000) == 0;
+    }
 
     private void RenderPixel(int x, int y)
     {
-        // Forced blank: output black
         if ((_inidisp & 0x80) != 0)
         {
             _frameBuffer.SetPixel(x, y, 0xFF000000);
@@ -243,134 +251,333 @@ public sealed class Ppu : IPpu
         }
 
         byte brightness = (byte)(_inidisp & 0x0F);
-        uint bgColor = GetBackdropColor();
 
-        uint pixelColor = bgColor;
+        // Compose pixel from all layers respecting SNES priority
+        uint pixelColor = ComposePixel(x, y);
 
-        // Render enabled background layers according to BG mode
-        byte mode = (byte)(_bgmode & 0x07);
-
-        if (mode == 0)
-        {
-            // Mode 0: 4 layers, 4 colors each (2bpp)
-            pixelColor = RenderMode0Pixel(x, y, bgColor);
-        }
-        else if (mode == 1)
-        {
-            // Mode 1: BG1+BG2 are 16-color (4bpp), BG3 is 4-color (2bpp)
-            pixelColor = RenderMode1Pixel(x, y, bgColor);
-        }
-        else if (mode == 7)
-        {
-            pixelColor = RenderMode7Pixel(x, y, bgColor);
-        }
-        else
-        {
-            // Other modes: use backdrop + BG1 if enabled, basic rendering
-            pixelColor = RenderFallbackPixel(x, y, bgColor);
-        }
-
-        if ((_tm & 0x10) != 0)
-        {
-            uint objColor = SampleObjPixel(x, y);
-            if ((objColor & 0xFF000000) != 0)
-                pixelColor = objColor;
-        }
-
-        // Apply brightness scaling
         if (brightness < 15)
             pixelColor = ApplyBrightness(pixelColor, brightness);
 
         _frameBuffer.SetPixel(x, y, pixelColor);
     }
 
-    private uint RenderMode0Pixel(int x, int y, uint bgColor)
+    private uint ComposePixel(int x, int y)
     {
-        // Mode 0: BG1–BG4, each 2bpp (4 colors from sub-palette)
-        // Priority (high→low): OBJ3, BG1.1, BG2.1, OBJ2, BG1.0, BG2.0, OBJ1, BG3.1, BG4.1, OBJ0, BG3.0, BG4.0, BD
-        uint color = bgColor;
+        byte mode = (byte)(_bgmode & 0x07);
 
-        // Render BG layers in priority order (simplified: back to front)
-        for (int layer = 3; layer >= 0; layer--)
-        {
-            if ((_tm & (1 << layer)) == 0) continue; // Layer disabled
-            uint layerColor = SampleBgLayer2bpp(layer, x, y);
-            if ((layerColor & 0xFF000000) != 0) // Non-transparent
-                color = layerColor;
-        }
-
-        return color;
+        if (mode == 0)
+            return ComposeMode0(x, y);
+        if (mode == 1)
+            return ComposeMode1(x, y);
+        if (mode == 2)
+            return ComposeMode2(x, y);
+        if (mode == 7)
+            return RenderMode7Pixel(x, y);
+        return ComposeFallback(x, y);
     }
 
-    private uint RenderMode1Pixel(int x, int y, uint bgColor)
+    /// <summary>
+    /// Returns OBJ pixel at (x,y) if the sprite priority matches priLevel.
+    /// Returns 0 if no sprite, transparent, or priority mismatch.
+    /// </summary>
+    private uint ObjPixelAtPriority(int x, int y, int priLevel)
     {
-        uint color = bgColor;
+        if ((_tm & 0x10) == 0) return 0;
+        PrepareObjScanline(y);
+        if (x >= _objScanlineOpaque.Length || !_objScanlineOpaque[x]) return 0;
+        if (_objScanlinePriority[x] != priLevel) return 0;
+        return _objScanlineBuffer[x];
+    }
 
-        // Mode 1 priority ladder (BG-only approximation):
-        //   BG3 low, BG2 low, BG1 low, BG3 high* / BG2 high / BG1 high
-        // where BGMODE bit 3 optionally raises BG3 above BG1/BG2 low priority.
-        bool bg3HighPriority = (_bgmode & 0x08) != 0;
+    // ── Mode 0 composition ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Priority ladder: OBJ3(0), BG1H(1), BG2H(2), OBJ2(3), BG1L(4), BG2L(5),
+    /// OBJ1(6), BG3H(7), BG4H(8), OBJ0(9), BG3L(10), BG4L(11), BD(12)
+    /// </summary>
+    private uint ComposeMode0(int x, int y)
+    {
+        uint c;
+
+        c = ObjPixelAtPriority(x, y, 3); if ((c & 0xFF000000) != 0) return c;
+
+        if ((_tm & 0x01) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(0, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        if ((_tm & 0x02) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(1, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 2); if ((c & 0xFF000000) != 0) return c;
+
+        if ((_tm & 0x01) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(0, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        if ((_tm & 0x02) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(1, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 1); if ((c & 0xFF000000) != 0) return c;
 
         if ((_tm & 0x04) != 0)
         {
-            var (c, priority) = SampleBgLayer2bppWithPriority(2, x, y);
-            if ((c & 0xFF000000) != 0 && !priority)
-                color = c;
+            var (color, pri) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
         }
 
-        if ((_tm & 0x02) != 0)
+        if ((_tm & 0x08) != 0)
         {
-            var (c, priority) = SampleBgLayer4bppWithPriority(1, x, y);
-            if ((c & 0xFF000000) != 0 && !priority)
-                color = c;
+            var (color, pri) = SampleBgLayer2bppWithPriority(3, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
         }
 
-        if ((_tm & 0x01) != 0)
+        c = ObjPixelAtPriority(x, y, 0); if ((c & 0xFF000000) != 0) return c;
+
+        if ((_tm & 0x04) != 0)
         {
-            var (c, priority) = SampleBgLayer4bppWithPriority(0, x, y);
-            if ((c & 0xFF000000) != 0 && !priority)
-                color = c;
+            var (color, pri) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
         }
 
-        if (bg3HighPriority && (_tm & 0x04) != 0)
+        if ((_tm & 0x08) != 0)
         {
-            var (c, priority) = SampleBgLayer2bppWithPriority(2, x, y);
-            if ((c & 0xFF000000) != 0 && priority)
-                color = c;
+            var (color, pri) = SampleBgLayer2bppWithPriority(3, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
         }
 
-        if ((_tm & 0x02) != 0)
-        {
-            var (c, priority) = SampleBgLayer4bppWithPriority(1, x, y);
-            if ((c & 0xFF000000) != 0 && priority)
-                color = c;
-        }
-
-        if ((_tm & 0x01) != 0)
-        {
-            var (c, priority) = SampleBgLayer4bppWithPriority(0, x, y);
-            if ((c & 0xFF000000) != 0 && priority)
-                color = c;
-        }
-
-        if (!bg3HighPriority && (_tm & 0x04) != 0)
-        {
-            var (c, priority) = SampleBgLayer2bppWithPriority(2, x, y);
-            if ((c & 0xFF000000) != 0 && priority)
-                color = c;
-        }
-
-        return color;
+        return GetBackdropColor();
     }
 
-    private uint RenderFallbackPixel(int x, int y, uint bgColor)
+    // ── Mode 1 composition ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Priority ladder (default): OBJ3(0), BG1H(1), BG2H(2), OBJ2(3),
+    /// BG1L(4), BG2L(5), OBJ1(6), BG3H(7), OBJ0(8), BG3L(9), BD(10)
+    ///
+    /// When BGMODE bit 3 = 1 (BG3 high priority), BG3H is raised to slot 4,
+    /// pushing BG1L/BG2L to slots 5/6.
+    /// </summary>
+    private uint ComposeMode1(int x, int y)
     {
+        bool bg3High = (_bgmode & 0x08) != 0;
+        uint c;
+
+        c = ObjPixelAtPriority(x, y, 3); if ((c & 0xFF000000) != 0) return c;
+
+        if ((_tm & 0x01) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppWithPriority(0, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        if ((_tm & 0x02) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppWithPriority(1, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 2); if ((c & 0xFF000000) != 0) return c;
+
+        if (bg3High && (_tm & 0x04) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        if ((_tm & 0x01) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppWithPriority(0, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        if ((_tm & 0x02) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppWithPriority(1, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 1); if ((c & 0xFF000000) != 0) return c;
+
+        if (!bg3High && (_tm & 0x04) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 0); if ((c & 0xFF000000) != 0) return c;
+
+        if ((_tm & 0x04) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        return GetBackdropColor();
+    }
+
+    // ── Mode 2 composition (offset-per-tile) ────────────────────────────────────
+
+    /// <summary>
+    /// Priority ladder: OBJ3(0), BG1H(1), BG2H(2), OBJ2(3), BG3H(4) [OPT],
+    /// BG1L(5), BG2L(6), OBJ1(7), BG3L(8) [OPT], OBJ0(9), BD(10)
+    ///
+    /// BG1 uses offset-per-tile: lower 8 bits of BG2's tilemap entry
+    /// provide X scroll offset per 8-pixel tile column.
+    /// </summary>
+    private uint ComposeMode2(int x, int y)
+    {
+        bool optMode = (_bgmode & 0x08) != 0;
+        uint c;
+
+        c = ObjPixelAtPriority(x, y, 3); if ((c & 0xFF000000) != 0) return c;
+
+        if ((_tm & 0x01) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppMode2(0, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        if ((_tm & 0x02) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppWithPriority(1, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 2); if ((c & 0xFF000000) != 0) return c;
+
+        if (optMode && (_tm & 0x04) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((color & 0xFF000000) != 0 && pri) return color;
+        }
+
+        if ((_tm & 0x01) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppMode2(0, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        if ((_tm & 0x02) != 0)
+        {
+            var (color, pri) = SampleBgLayer4bppWithPriority(1, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 1); if ((c & 0xFF000000) != 0) return c;
+
+        if (optMode && (_tm & 0x04) != 0)
+        {
+            var (color, pri) = SampleBgLayer2bppWithPriority(2, x, y);
+            if ((color & 0xFF000000) != 0 && !pri) return color;
+        }
+
+        c = ObjPixelAtPriority(x, y, 0); if ((c & 0xFF000000) != 0) return c;
+
+        return GetBackdropColor();
+    }
+
+    private int GetMode2Offset(int x, int y)
+    {
+        byte sc = GetBgSc(1);
+        int tileSize = GetBgTileSize(1);
+
+        int tileX = x / tileSize;
+        int tileY = y / tileSize;
+
+        int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
+        if (tilemapAddr + 1 >= _vram.Length) return 0;
+
+        ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
+        return entry & 0xFF;
+    }
+
+    /// <summary>
+    /// Samples a 4bpp BG layer at (x, y) with X scroll modified by
+    /// the Mode 2 offset-per-tile value from BG2's tilemap.
+    /// </summary>
+    private (uint Color, bool Priority) SampleBgLayer4bppMode2(int layer, int x, int y)
+    {
+        int xOffset = GetMode2Offset(x, y);
+
+        byte sc = GetBgSc(layer);
+        int tileSize = GetBgTileSize(layer);
+        (int mapWidthPixels, int mapHeightPixels) = GetBgMapDimensions(sc, tileSize);
+
+        int scrollX = (_bgHOffset[layer] + xOffset) & 0x3FF;
+        int scrollY = _bgVOffset[layer] & 0x3FF;
+
+        int mapX = WrapBgCoordinate(x + scrollX, mapWidthPixels);
+        int mapY = WrapBgCoordinate(y + scrollY, mapHeightPixels);
+
+        int tileX = mapX / tileSize;
+        int tileY = mapY / tileSize;
+        int pixX  = mapX % tileSize;
+        int pixY  = mapY % tileSize;
+
+        int tilemapAddr = GetTilemapEntryAddress(sc, tileX, tileY);
+        if (tilemapAddr + 1 >= _vram.Length) return (0, false);
+
+        ushort entry = (ushort)(_vram[tilemapAddr] | (_vram[tilemapAddr + 1] << 8));
+        int tileNum  = entry & 0x03FF;
+        bool priority = (entry & 0x2000) != 0;
+        bool hflip   = (entry & 0x4000) != 0;
+        bool vflip   = (entry & 0x8000) != 0;
+        int palette  = (entry >> 10) & 0x07;
+
+        ResolveBgTilePixel(tileSize, hflip, vflip, pixX, pixY, ref tileNum, out int tpx, out int tpy);
+
+        int charBase = GetBgCharBase(layer);
+        int tileAddr = charBase + tileNum * 32 + tpy * 2;
+        if (tileAddr + 17 >= _vram.Length) return (0, false);
+
+        byte p0lo = _vram[tileAddr];
+        byte p0hi = _vram[tileAddr + 1];
+        byte p1lo = _vram[tileAddr + 16];
+        byte p1hi = _vram[tileAddr + 17];
+
+        int shift = 7 - tpx;
+        int colorIndex = ((p0lo >> shift) & 1)
+                       | (((p0hi >> shift) & 1) << 1)
+                       | (((p1lo >> shift) & 1) << 2)
+                       | (((p1hi >> shift) & 1) << 3);
+
+        if (colorIndex == 0) return (0, false);
+
+        int paletteBase = (palette * 16 + colorIndex) * 2;
+        if (paletteBase + 1 >= _cgram.Length) return (0xFF808080, priority);
+
+        ushort snesColor = (ushort)(_cgram[paletteBase] | (_cgram[paletteBase + 1] << 8));
+        return (SnesFrameBuffer.SnesColorToArgb(snesColor), priority);
+    }
+
+    // ── Fallback composition ───────────────────────────────────────────────────
+
+    private uint ComposeFallback(int x, int y)
+    {
+        // Check all OBJ levels in priority order, then BG1
+        for (int pri = 3; pri >= 0; pri--)
+        {
+            uint c = ObjPixelAtPriority(x, y, pri);
+            if ((c & 0xFF000000) != 0) return c;
+        }
+
         if ((_tm & 0x01) != 0)
         {
             uint c = SampleBgLayer4bpp(0, x, y);
             if ((c & 0xFF000000) != 0) return c;
         }
-        return bgColor;
+
+        return GetBackdropColor();
     }
 
     // ── Background tile sampling ───────────────────────────────────────────────
@@ -488,8 +695,9 @@ public sealed class Ppu : IPpu
         return (SnesFrameBuffer.SnesColorToArgb(snesColor), priority);
     }
 
-    private uint RenderMode7Pixel(int x, int y, uint bgColor)
+    private uint RenderMode7Pixel(int x, int y)
     {
+        uint bgColor = GetBackdropColor();
         if ((_tm & 0x01) == 0)
             return bgColor;
 

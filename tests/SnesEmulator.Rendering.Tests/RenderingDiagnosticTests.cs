@@ -630,11 +630,12 @@ public sealed class SpriteRenderingTests
         // Sprite palette 0, color 1 = red. OBJ palettes live in CGRAM 128..255.
         SetCgramColor(ppu, 128 + 1, 0x001F);
 
-        // Tile 0 row 0, pixel 0 = color 1.
-        WriteVramByte(ppu, 0, 0x80);
-        WriteVramByte(ppu, 1, 0x00);
-        WriteVramByte(ppu, 16, 0x00);
-        WriteVramByte(ppu, 17, 0x00);
+        // Tile 0 row 0, pixel 0 = color 1 (2bpp: word 0 = 0x0080).
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, 0x00);
+        ppu.WriteRegister(0x17, 0x00);
+        ppu.WriteRegister(0x18, 0x80);
+        ppu.WriteRegister(0x19, 0x00);
 
         // Sprite 0 at (0,0), tile 0, palette 0.
         ppu.WriteRegister(0x02, 0x00);
@@ -1065,20 +1066,20 @@ public sealed class Mode1PriorityTests
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x05, 0x09); // Mode 1 + BG3 high priority
         ppu.WriteRegister(0x2C, 0x05); // BG1 + BG3 enabled
-        ppu.WriteRegister(0x07, 0x00); // BG1SC
-        ppu.WriteRegister(0x09, 0x00); // BG3SC
+        ppu.WriteRegister(0x07, 0x00); // BG1SC: tilemap at word 0x0000
+        ppu.WriteRegister(0x09, 0x04); // BG3SC: tilemap at byte 0x0800 (word 0x0400)
         ppu.WriteRegister(0x0B, 0x00); // BG1 char base = 0
-        ppu.WriteRegister(0x0C, 0x04); // BG3 char base = $2000 bytes
+        ppu.WriteRegister(0x0C, 0x04); // BG3 char base = bits 3-0=4: 4*0x2000=0x8000
 
         // BG1 low-priority tile 1 at map entry 0, palette 1
         SetVramWord(ppu, 0x0000, 0x0401);
         // BG3 high-priority tile 1 at map entry 0 (priority bit set), palette 0
-        SetVramWord(ppu, 0x0000 + 0x800, 0x2001);
+        SetVramWord(ppu, 0x0400, 0x2001);
 
         // BG1 tile 1: color index 1, palette 0 -> red
         Write4BppSolidTile(ppu, 0x0020, 0x01);
-        // BG3 tile 1 at char base $2000 bytes -> word $1000 -> byte $2000, color index 1, palette 0 -> green
-        Write2BppSolidTile(ppu, 0x2000 + 0x0010, 0x01);
+        // BG3 tile 1 at char base $8000 bytes (BG34NBA=0x04: 4 * 0x2000 = 0x8000), color index 1, palette 0 -> green
+        Write2BppSolidTile(ppu, 0x8010, 0x01);
 
         SetCgramColor(ppu, 17, 0x001F);     // BG1 palette 1, color 1 = red
         SetCgramColor(ppu, 1, 0x03E0);      // BG3 palette 0, color 1 = green
@@ -1119,27 +1120,26 @@ public sealed class Mode1PriorityTests
 
     private static void Write4BppSolidTile(Ppu ppu, int byteBase, int colorIndex)
     {
-        byte p0 = (byte)(((colorIndex & 0x01) != 0) ? 0xFF : 0x00);
-        byte p1 = (byte)(((colorIndex & 0x02) != 0) ? 0xFF : 0x00);
-        byte p2 = (byte)(((colorIndex & 0x04) != 0) ? 0xFF : 0x00);
-        byte p3 = (byte)(((colorIndex & 0x08) != 0) ? 0xFF : 0x00);
+        ushort p01 = (ushort)(((colorIndex & 0x01) != 0 ? 0xFF : 0x00)
+                            | (((colorIndex & 0x02) != 0 ? 0xFF : 0x00) << 8));
+        ushort p23 = (ushort)(((colorIndex & 0x04) != 0 ? 0xFF : 0x00)
+                            | (((colorIndex & 0x08) != 0 ? 0xFF : 0x00) << 8));
         for (int row = 0; row < 8; row++)
         {
-            WriteVramByte(ppu, byteBase + row * 2, p0);
-            WriteVramByte(ppu, byteBase + row * 2 + 1, p1);
-            WriteVramByte(ppu, byteBase + 16 + row * 2, p2);
-            WriteVramByte(ppu, byteBase + 16 + row * 2 + 1, p3);
+            int baseWordAddr = (byteBase + row * 2) / 2;
+            SetVramWord(ppu, baseWordAddr, p01);
+            SetVramWord(ppu, baseWordAddr + 8, p23);
         }
     }
 
     private static void Write2BppSolidTile(Ppu ppu, int byteBase, int colorIndex)
     {
-        byte p0 = (byte)(((colorIndex & 0x01) != 0) ? 0xFF : 0x00);
-        byte p1 = (byte)(((colorIndex & 0x02) != 0) ? 0xFF : 0x00);
+        ushort word = (ushort)(((colorIndex & 0x01) != 0 ? 0xFF : 0x00)
+                             | (((colorIndex & 0x02) != 0 ? 0xFF : 0x00) << 8));
         for (int row = 0; row < 8; row++)
         {
-            WriteVramByte(ppu, byteBase + row * 2, p0);
-            WriteVramByte(ppu, byteBase + row * 2 + 1, p1);
+            int wordAddr = (byteBase + row * 2) / 2;
+            SetVramWord(ppu, wordAddr, word);
         }
     }
 
@@ -1148,5 +1148,90 @@ public sealed class Mode1PriorityTests
         ppu.WriteRegister(0x21, (byte)colorIndex);
         ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
         ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+}
+
+public sealed class Mode2OffsetTests
+{
+    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+
+    private static void SetVramWord(Ppu ppu, int wordAddr, ushort value)
+    {
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, (byte)(wordAddr & 0xFF));
+        ppu.WriteRegister(0x17, (byte)(wordAddr >> 8));
+        ppu.WriteRegister(0x18, (byte)(value & 0xFF));
+        ppu.WriteRegister(0x19, (byte)(value >> 8));
+    }
+
+    private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
+    {
+        ppu.WriteRegister(0x21, (byte)colorIndex);
+        ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
+        ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+
+    [Fact]
+    public void Mode2_OffsetZero_PixelFromBg1Tile()
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x05, 0x02); // Mode 2, no OPT
+        ppu.WriteRegister(0x2C, 0x03); // BG1 + BG2 enabled
+        ppu.WriteRegister(0x07, 0x00); // BG1SC = 0
+        ppu.WriteRegister(0x08, 0x10); // BG2SC = 0x10
+        ppu.WriteRegister(0x0B, 0x00); // BG12NBA
+
+        // BG1 tilemap entry at (0,0): tile 1, palette 0, low priority
+        SetVramWord(ppu, 0x0000, 0x0001);
+        // BG1 char data for tile 1 at char base 0 + 1*32 = byte 32 = word 16:
+        // row 0 pixel 0 = color 1 (bitplane 0 = 0x80)
+        SetVramWord(ppu, 0x0010, 0x0080);
+
+        // BG2 tilemap at tile (0,0): offset = 0 (lower byte)
+        // BG2SC=0x10 → base word = (0x10>>2)*0x800/2 = 0x1000
+        SetVramWord(ppu, 0x1000, 0x0000);
+
+        SetCgramColor(ppu, 1, 0x001F); // palette 0, color 1 = red
+
+        ppu.Clock(4);
+
+        uint pixel = ppu.FrameBuffer.Pixels[0];
+        pixel.Should().Be(SnesFrameBuffer.SnesColorToArgb(0x001F));
+    }
+
+    [Fact]
+    public void Mode2_OffsetEight_ShiftsBg1TileRight()
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x05, 0x02); // Mode 2, no OPT
+        ppu.WriteRegister(0x2C, 0x03); // BG1 + BG2 enabled
+        ppu.WriteRegister(0x07, 0x00); // BG1SC = 0
+        ppu.WriteRegister(0x08, 0x10); // BG2SC = 0x10
+        ppu.WriteRegister(0x0B, 0x00); // BG12NBA
+
+        // BG1 tilemap: tile 1 = colored
+        SetVramWord(ppu, 0x0000, 0x0001);
+        // BG1 char data: tile 1, pixel 0 opaque
+        SetVramWord(ppu, 0x0010, 0x0080);
+        // BG2 tilemap at tile (0,0): offset = 8 → shifts tile 1 to tile 2's position
+        SetVramWord(ppu, 0x1000, 0x0008);
+
+        SetCgramColor(ppu, 1, 0x001F); // red
+
+        ppu.Clock(4);
+
+        // With offset=8, BG1 samples at x=8 → tile (8/8=1) = tile 1 in tilemap
+        // Wait — offset 8 shifts scroll by 8, so the source x = 0+8=8
+        // tileX = 8/8 = 1 in BG1's tilemap → reads tilemap at (1,0)
+        // Tilemap entry at (1,0) was never set → default 0 → tile 0 → char data starts at 0
+        // All char data at 0 is zero → transparent → backdrop
+        uint pixel = ppu.FrameBuffer.Pixels[0];
+        pixel.Should().Be(0xFF000000u); // transparent/backdrop
     }
 }
