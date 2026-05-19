@@ -1151,6 +1151,71 @@ public sealed class Mode1PriorityTests
     }
 }
 
+public sealed class ObjSizeTableTests
+{
+    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+
+    private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
+    {
+        ppu.WriteRegister(0x21, (byte)colorIndex);
+        ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
+        ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+
+    private static void WriteOamEntry(Ppu ppu, int index, int x, int y, int tile, byte attr)
+    {
+        ppu.WriteRegister(0x02, (byte)(index * 4));
+        ppu.WriteRegister(0x03, (byte)(x & 0xFF));
+        ppu.WriteRegister(0x03, (byte)y);
+        ppu.WriteRegister(0x03, (byte)tile);
+        ppu.WriteRegister(0x03, attr);
+    }
+
+    private static void SetHighTableBits(Ppu ppu, int index, bool xBit9, bool large)
+    {
+        int byteIndex = 512 + (index >> 2);
+        int shift = (index & 3) * 2;
+        ppu.WriteRegister(0x02, (byte)(byteIndex & 0xFF));
+        ppu.WriteRegister(0x04, (byte)((ppu.ReadRegister(0x08) & ~(3 << shift))
+                                        | ((xBit9 ? 1 : 0) << shift)
+                                        | ((large ? 1 : 0) << (shift + 1))));
+    }
+
+    [Theory]
+    [InlineData(6, false)] // case 6 non-large: should be (8, 16)
+    [InlineData(7, false)] // case 7 non-large: should be (8, 16)
+    public void ObelsValue_NonLargeSprite_WidthIs8(int obselValue, bool large)
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x01, (byte)(obselValue << 5)); // OBSEL
+        ppu.WriteRegister(0x2C, 0x10); // OBJ enabled on main screen
+
+        // Sprite 0 at (0, 0), tile 0, attr=0x20 (priority 2)
+        WriteOamEntry(ppu, 0, 0, 0, 0, 0x20);
+        SetHighTableBits(ppu, 0, false, large);
+
+        // Tile 0 row 0 pixel 0 opaque (color 1)
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, 0x00);
+        ppu.WriteRegister(0x17, 0x00);
+        ppu.WriteRegister(0x18, 0x80);
+        ppu.WriteRegister(0x19, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // red
+
+        ppu.Clock(4);
+
+        uint inside  = ppu.FrameBuffer.Pixels[0]; // x=0, y=0 — inside sprite
+        uint outside = ppu.FrameBuffer.Pixels[8]; // x=8, y=0 — outside if width=8
+
+        inside.Should().Be(SnesFrameBuffer.SnesColorToArgb(0x001F));
+        outside.Should().Be(0xFF000000u); // backdrop/transparent
+    }
+}
+
 public sealed class Mode2OffsetTests
 {
     private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);

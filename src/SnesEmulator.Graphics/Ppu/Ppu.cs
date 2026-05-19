@@ -967,8 +967,8 @@ public sealed class Ppu : IPpu
             3 => large ? (32, 32) : (16, 16),
             4 => large ? (64, 64) : (16, 16),
             5 => large ? (64, 64) : (32, 32),
-            6 => large ? (32, 64) : (16, 32),
-            _ => large ? (32, 32) : (16, 32)
+            6 => large ? (32, 64) : (8, 16),
+            _ => large ? (32, 32) : (8, 16)
         };
     }
 
@@ -1097,8 +1097,9 @@ public sealed class Ppu : IPpu
                 if (_tm != value)
                     _logger.LogDebug("TM (main screen): ${Old:X2} → ${New:X2}", _tm, value);
                 _tm = value;
+                InvalidateObjCache();
                 break;
-            case 0x2D: _ts = value; break;
+            case 0x2D: _ts = value; InvalidateObjCache(); break;
             case 0x2E: _tmw = value; break;
             case 0x2F: _tsw = value; break;
             case 0x30: _cgswsel = value; break;
