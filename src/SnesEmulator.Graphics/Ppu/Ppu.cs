@@ -103,6 +103,7 @@ public sealed class Ppu : IPpu
     private ushort _oamPointer;
     private byte _oamWriteLatch;
     private bool _oamWriteLowPending;
+    private bool _oamPriorityToggle; // $2103 bit 2: 0=higher-# wins ties, 1=lower-# wins ties
 
     // BG scroll registers share a single previous-byte latch across all BGnHOFS/BGnVOFS writes.
     // This matches the SNES write-twice behaviour closely enough for common boot/title code.
@@ -162,6 +163,7 @@ public sealed class Ppu : IPpu
         _mode7PrevByte = 0;
         _oamWriteLatch = 0;
         _oamWriteLowPending = false;
+        _oamPriorityToggle = false;
         _frameBuffer.Clear();
         _stat77 = 0;
         _stat78 = 0x01;
@@ -789,7 +791,15 @@ public sealed class Ppu : IPpu
         Array.Clear(_objScanlineBuffer, 0, _objScanlineBuffer.Length);
         Array.Clear(_objScanlinePriority, 0, _objScanlinePriority.Length);
 
-        for (int spriteIndex = 127; spriteIndex >= 0; spriteIndex--)
+        // $2103 bit 2: 0 = higher-numbered sprite wins same-priority ties (iterate 0→127)
+        //               1 = lower-numbered sprite wins ties (iterate 127→0)
+        int start, end, step;
+        if (_oamPriorityToggle)
+        { start = 127; end = -1;   step = -1; }
+        else
+        { start = 0;   end = 128; step = 1;  }
+
+        for (int spriteIndex = start; spriteIndex != end; spriteIndex += step)
         {
             int low = spriteIndex * 4;
             int xLow = _oam[low];
@@ -1038,9 +1048,15 @@ public sealed class Ppu : IPpu
                 if (_obsel != value)
                     _logger.LogDebug("OBSEL: ${Old:X2} → ${New:X2}", _obsel, value);
                 _obsel = value;
+                InvalidateObjCache();
                 break;
             case 0x02: _oamadd = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 0x03) << 8)); InvalidateObjCache(); break;
-            case 0x03: _oamaddh = value; _oamPointer = (ushort)(_oamadd | ((_oamaddh & 0x03) << 8)); InvalidateObjCache(); break;
+            case 0x03:
+                _oamaddh = value;
+                _oamPointer = (ushort)(_oamadd | ((_oamaddh & 0x03) << 8));
+                _oamPriorityToggle = (_oamaddh & 0x04) != 0;
+                InvalidateObjCache();
+                break;
             case 0x04: WriteOam(value); InvalidateObjCache(); break;
             case 0x05:
                 if (_bgmode != value)

@@ -615,13 +615,36 @@ public sealed class TrackingMemory
 
 public sealed class SpriteRenderingTests
 {
-    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+    private static Ppu CreatePpu()
+    {
+        var ppu = new Ppu(NullLogger<Ppu>.Instance);
+        ppu.Reset();
+        // Hide sprites 1-127 so they don't overlap sprite 0 at (0,0).
+        // Byte 512 hides sprites 1-3; bytes 513-543 hide sprites 4-127.
+        // Individual tests may clear the relevant high-table bits for sprites they use.
+        HideUnusedSprites(ppu);
+        return ppu;
+    }
+
+    private static void HideUnusedSprites(Ppu ppu)
+    {
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x02);
+        ppu.WriteRegister(0x04, 0b01010100);
+        for (int byteIdx = 513; byteIdx < 544; byteIdx++)
+        {
+            ppu.WriteRegister(0x02, (byte)(byteIdx & 0xFF));
+            ppu.WriteRegister(0x03, (byte)((byteIdx >> 8) & 0x03));
+            ppu.WriteRegister(0x04, 0b01010101);
+        }
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+    }
 
     [Fact]
     public void ObjPixel_IsRendered_WhenObjLayerEnabled()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x01, 0x00); // OBSEL: 8x8/16x16, base 0
@@ -654,7 +677,6 @@ public sealed class SpriteRenderingTests
     public void OamLowTable_WordBufferedWrites_CommitOnSecondByte()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x02, 0x00);
         ppu.WriteRegister(0x03, 0x00);
@@ -753,7 +775,6 @@ public sealed class SpriteRenderingTests
     public void SingleSprite8x8_RendersCorrectPixel()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on, full brightness
         ppu.WriteRegister(0x01, 0x00); // OBSEL: 8x8 base
@@ -778,7 +799,6 @@ public sealed class SpriteRenderingTests
     public void SingleSprite8x8_Palette1_ChangesColor()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -804,7 +824,6 @@ public sealed class SpriteRenderingTests
     public void Sprite16x16_RendersFourTiles()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00); // OBSEL: 8x8/16x16
@@ -839,7 +858,6 @@ public sealed class SpriteRenderingTests
     public void SingleSprite8x8_At_X8_RendersCorrectPixel()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -860,7 +878,6 @@ public sealed class SpriteRenderingTests
     public void SingleSprite8x8_WithTile1_RendersCorrectPixel()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -884,7 +901,6 @@ public sealed class SpriteRenderingTests
     public void LargeSprite_SameTile_WorksForCoverageTest()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -897,6 +913,7 @@ public sealed class SpriteRenderingTests
 
         WriteSpriteOam(ppu, 0, 0, 0, 0, 0);
         WriteSpriteOam(ppu, 1, 8, 0, 1, 0);
+        SetSpriteSizeFlags(ppu, 1, false, false);
 
         ClockScanline(ppu);
 
@@ -908,7 +925,6 @@ public sealed class SpriteRenderingTests
     public void Single16x16Sprite_WithAllTiles_ByIndex()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -940,7 +956,6 @@ public sealed class SpriteRenderingTests
     public void Single16x16Sprite_DifferentTile1()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -967,7 +982,6 @@ public sealed class SpriteRenderingTests
     public void Sprite16x16_ProbeAllScanlinePixels()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -991,7 +1005,6 @@ public sealed class SpriteRenderingTests
     public void SpriteHFlip_MirrorsHorizontally()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -1024,7 +1037,6 @@ public sealed class SpriteRenderingTests
     public void SpritePriority_HigherOverwritesLower()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F);
         ppu.WriteRegister(0x01, 0x00);
@@ -1061,7 +1073,6 @@ public sealed class Mode1PriorityTests
     public void Mode1_Bg3HighPriority_CanOverrideBg1LowPriority()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x05, 0x09); // Mode 1 + BG3 high priority
@@ -1153,7 +1164,13 @@ public sealed class Mode1PriorityTests
 
 public sealed class ObjSizeTableTests
 {
-    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+    private static Ppu CreatePpu()
+    {
+        var ppu = new Ppu(NullLogger<Ppu>.Instance);
+        ppu.Reset();
+        HideUnusedSprites(ppu);
+        return ppu;
+    }
 
     private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
     {
@@ -1164,11 +1181,13 @@ public sealed class ObjSizeTableTests
 
     private static void WriteOamEntry(Ppu ppu, int index, int x, int y, int tile, byte attr)
     {
-        ppu.WriteRegister(0x02, (byte)(index * 4));
-        ppu.WriteRegister(0x03, (byte)(x & 0xFF));
-        ppu.WriteRegister(0x03, (byte)y);
-        ppu.WriteRegister(0x03, (byte)tile);
-        ppu.WriteRegister(0x03, attr);
+        int lowAddr = index * 4;
+        ppu.WriteRegister(0x02, (byte)(lowAddr & 0xFF));
+        ppu.WriteRegister(0x03, (byte)((lowAddr >> 8) & 0x01));
+        ppu.WriteRegister(0x04, (byte)(x & 0xFF));
+        ppu.WriteRegister(0x04, (byte)(y & 0xFF));
+        ppu.WriteRegister(0x04, (byte)(tile & 0xFF));
+        ppu.WriteRegister(0x04, attr);
     }
 
     private static void SetHighTableBits(Ppu ppu, int index, bool xBit9, bool large)
@@ -1181,13 +1200,24 @@ public sealed class ObjSizeTableTests
                                         | ((large ? 1 : 0) << (shift + 1))));
     }
 
+    private static void HideUnusedSprites(Ppu ppu)
+    {
+        for (int byteIdx = 513; byteIdx < 544; byteIdx++)
+        {
+            ppu.WriteRegister(0x02, (byte)(byteIdx & 0xFF));
+            ppu.WriteRegister(0x03, (byte)((byteIdx >> 8) & 0x03));
+            ppu.WriteRegister(0x04, 0b01010101);
+        }
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+    }
+
     [Theory]
     [InlineData(6, false)] // case 6 non-large: should be (8, 16)
     [InlineData(7, false)] // case 7 non-large: should be (8, 16)
     public void ObelsValue_NonLargeSprite_WidthIs8(int obselValue, bool large)
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x01, (byte)(obselValue << 5)); // OBSEL
@@ -1272,7 +1302,6 @@ public sealed class Mode2OffsetTests
     public void Mode2_OffsetZero_PixelFromBg1Tile()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x05, 0x02); // Mode 2, no OPT
@@ -1303,7 +1332,6 @@ public sealed class Mode2OffsetTests
     public void Mode2_OffsetEight_ShiftsBg1TileRight()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x05, 0x02); // Mode 2, no OPT
