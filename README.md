@@ -152,6 +152,8 @@ dotnet test tests/SnesEmulator.Core.Tests
 4. Press `F1` or click **▶ Run** to start emulation
 
 > **Note:** You must supply your own legally-obtained ROM files. ROM files are not included.
+>
+> See [`docs/compatibility.md`](docs/compatibility.md) for the compatibility testing guide and information on legal test ROM usage.
 
 ---
 

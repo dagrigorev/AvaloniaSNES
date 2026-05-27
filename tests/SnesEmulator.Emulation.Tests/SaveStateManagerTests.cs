@@ -117,12 +117,129 @@ public sealed class SaveStateManagerTests
         string path = Path.Combine(Path.GetTempPath(), $"bad_{Guid.NewGuid():N}.state");
         try
         {
-            File.WriteAllBytes(path, new byte[] { 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 });
+            // Magic = 0x00000000, Version = 2 (LE)
+            File.WriteAllBytes(path, new byte[] { 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 });
 
             Action act = () => _manager.LoadState(path, MakeCpuMock().Object, MakePpuMock().Object,
                                                    MakeApuMock().Object, MakeWramMock().Object);
             act.Should().Throw<SaveStateException>()
-               .WithMessage("*Invalid save state*");
+               .WithMessage("*bad magic*");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void LoadState_FutureVersion_ThrowsSaveStateException()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"future_{Guid.NewGuid():N}.state");
+        try
+        {
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+            w.Write("SNES"u8);
+            w.Write(9999); // unsupported future version
+            w.Write(0);    // no components
+            File.WriteAllBytes(path, ms.ToArray());
+
+            Action act = () => _manager.LoadState(path, MakeCpuMock().Object, MakePpuMock().Object,
+                                                   MakeApuMock().Object, MakeWramMock().Object);
+            act.Should().Throw<SaveStateException>()
+               .WithMessage("*newer emulator version*");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void LoadState_OldVersion_ThrowsSaveStateException()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"old_{Guid.NewGuid():N}.state");
+        try
+        {
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+            w.Write("SNES"u8);
+            w.Write(1); // version 1 — too old
+            w.Write(0);
+            File.WriteAllBytes(path, ms.ToArray());
+
+            Action act = () => _manager.LoadState(path, MakeCpuMock().Object, MakePpuMock().Object,
+                                                   MakeApuMock().Object, MakeWramMock().Object);
+            act.Should().Throw<SaveStateException>()
+               .WithMessage("*too old*");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void LoadState_NegativeSectionLength_ThrowsSaveStateException()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"neg_{Guid.NewGuid():N}.state");
+        try
+        {
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+            w.Write("SNES"u8);
+            w.Write(2);               // version
+            w.Write(-1);              // negative length → corruption
+            File.WriteAllBytes(path, ms.ToArray());
+
+            Action act = () => _manager.LoadState(path, MakeCpuMock().Object, MakePpuMock().Object,
+                                                   MakeApuMock().Object, MakeWramMock().Object);
+            act.Should().Throw<SaveStateException>()
+               .WithMessage("*negative section length*");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void LoadState_TruncatedFile_ThrowsWithoutMutatingComponents()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"trunc_{Guid.NewGuid():N}.state");
+        try
+        {
+            var cpuMock  = MakeCpuMock();
+            var ppuMock  = MakePpuMock();
+            var apuMock  = MakeApuMock();
+            var wramMock = MakeWramMock();
+
+            // Save valid state
+            _manager.SaveState(path, cpuMock.Object, ppuMock.Object,
+                               apuMock.Object, wramMock.Object);
+
+            // Truncate by removing last 10 bytes
+            var truncated = File.ReadAllBytes(path).Take(..^10).ToArray();
+            File.WriteAllBytes(path, truncated);
+
+            Action act = () => _manager.LoadState(path, cpuMock.Object, ppuMock.Object,
+                                                   apuMock.Object, wramMock.Object);
+            act.Should().Throw<SaveStateException>();
+
+            // Verify no component was mutated (LoadState never called)
+            cpuMock.Verify(c => c.LoadState(It.IsAny<byte[]>()), Times.Never);
+            ppuMock.Verify(p => p.LoadState(It.IsAny<byte[]>()), Times.Never);
+            apuMock.Verify(a => a.LoadState(It.IsAny<byte[]>()), Times.Never);
+            wramMock.Verify(w => w.LoadState(It.IsAny<byte[]>()), Times.Never);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void LoadState_ExcessiveSectionLength_ThrowsSaveStateException()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"huge_{Guid.NewGuid():N}.state");
+        try
+        {
+            using var ms = new MemoryStream();
+            using var w = new BinaryWriter(ms);
+            w.Write("SNES"u8);
+            w.Write(2);
+            w.Write(11 * 1024 * 1024); // > 10 MiB limit
+            File.WriteAllBytes(path, ms.ToArray());
+
+            Action act = () => _manager.LoadState(path, MakeCpuMock().Object, MakePpuMock().Object,
+                                                   MakeApuMock().Object, MakeWramMock().Object);
+            act.Should().Throw<SaveStateException>()
+               .WithMessage("*exceeds maximum*");
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

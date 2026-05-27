@@ -615,13 +615,36 @@ public sealed class TrackingMemory
 
 public sealed class SpriteRenderingTests
 {
-    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+    private static Ppu CreatePpu()
+    {
+        var ppu = new Ppu(NullLogger<Ppu>.Instance);
+        ppu.Reset();
+        // Hide sprites 1-127 so they don't overlap sprite 0 at (0,0).
+        // Byte 512 hides sprites 1-3; bytes 513-543 hide sprites 4-127.
+        // Individual tests may clear the relevant high-table bits for sprites they use.
+        HideUnusedSprites(ppu);
+        return ppu;
+    }
+
+    private static void HideUnusedSprites(Ppu ppu)
+    {
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x02);
+        ppu.WriteRegister(0x04, 0b01010100);
+        for (int byteIdx = 513; byteIdx < 544; byteIdx++)
+        {
+            ppu.WriteRegister(0x02, (byte)(byteIdx & 0xFF));
+            ppu.WriteRegister(0x03, (byte)((byteIdx >> 8) & 0x03));
+            ppu.WriteRegister(0x04, 0b01010101);
+        }
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+    }
 
     [Fact]
     public void ObjPixel_IsRendered_WhenObjLayerEnabled()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x01, 0x00); // OBSEL: 8x8/16x16, base 0
@@ -630,11 +653,12 @@ public sealed class SpriteRenderingTests
         // Sprite palette 0, color 1 = red. OBJ palettes live in CGRAM 128..255.
         SetCgramColor(ppu, 128 + 1, 0x001F);
 
-        // Tile 0 row 0, pixel 0 = color 1.
-        WriteVramByte(ppu, 0, 0x80);
-        WriteVramByte(ppu, 1, 0x00);
-        WriteVramByte(ppu, 16, 0x00);
-        WriteVramByte(ppu, 17, 0x00);
+        // Tile 0 row 0, pixel 0 = color 1 (2bpp: word 0 = 0x0080).
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, 0x00);
+        ppu.WriteRegister(0x17, 0x00);
+        ppu.WriteRegister(0x18, 0x80);
+        ppu.WriteRegister(0x19, 0x00);
 
         // Sprite 0 at (0,0), tile 0, palette 0.
         ppu.WriteRegister(0x02, 0x00);
@@ -653,7 +677,6 @@ public sealed class SpriteRenderingTests
     public void OamLowTable_WordBufferedWrites_CommitOnSecondByte()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x02, 0x00);
         ppu.WriteRegister(0x03, 0x00);
@@ -693,11 +716,352 @@ public sealed class SpriteRenderingTests
         }
     }
 
+    /// <summary>Write a VRAM word (2 bytes) with correct VMADD handling.</summary>
+    private static void WriteVramWord(Ppu ppu, int byteAddr, byte lowByte, byte highByte)
+    {
+        int wordAddr = byteAddr / 2;
+        ppu.WriteRegister(0x15, 0x80); // VMAIN: increment on high write
+        ppu.WriteRegister(0x16, (byte)(wordAddr & 0xFF));
+        ppu.WriteRegister(0x17, (byte)(wordAddr >> 8));
+        ppu.WriteRegister(0x18, lowByte);
+        ppu.WriteRegister(0x19, highByte);
+    }
+
+    /// <summary>Set a 4bpp tile row's 4 bitplanes at once.</summary>
+    private static void WriteTile4BppRow(Ppu ppu, int tileIndex, int row, byte bp0, byte bp1, byte bp2, byte bp3)
+    {
+        int baseByte = tileIndex * 32;
+        WriteVramWord(ppu, baseByte + row * 2, bp0, bp1);
+        WriteVramWord(ppu, baseByte + 16 + row * 2, bp2, bp3);
+    }
+
     private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
     {
         ppu.WriteRegister(0x21, (byte)colorIndex);
         ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
         ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+
+    /// <summary>Write one sprite entry in the OAM low table (4 bytes: X, Y, tile, attr).</summary>
+    private static void WriteSpriteOam(Ppu ppu, int index, int x, int y, int tile, byte attr)
+    {
+        int lowAddr = index * 4;
+        ppu.WriteRegister(0x02, (byte)(lowAddr & 0xFF));
+        ppu.WriteRegister(0x03, (byte)((lowAddr >> 8) & 0x01));
+        ppu.WriteRegister(0x04, (byte)(x & 0xFF));
+        ppu.WriteRegister(0x04, (byte)(y & 0xFF));
+        ppu.WriteRegister(0x04, (byte)(tile & 0xFF));
+        ppu.WriteRegister(0x04, attr);
+    }
+
+    /// <summary>Set sprite high-table bits (X-bit9 and large flag).</summary>
+    private static void SetSpriteSizeFlags(Ppu ppu, int index, bool xBit9, bool large)
+    {
+        int highAddr = 512 + (index >> 2);
+        int shift = (index & 0x03) * 2;
+        byte val = (byte)(((xBit9 ? 1 : 0) | (large ? 2 : 0)) << shift);
+        ppu.WriteRegister(0x02, (byte)(highAddr & 0xFF));
+        ppu.WriteRegister(0x03, (byte)((highAddr >> 8) & 0x03));
+        ppu.WriteRegister(0x04, val);
+    }
+
+    /// <summary>Clock the PPU through one full scanline (341 dots = 1364 master cycles).</summary>
+    private static void ClockScanline(Ppu ppu) => ppu.Clock(1364);
+
+    /// <summary>Get pixel ARGB value at (x, y) from the framebuffer.</summary>
+    private static uint GetPixel(Ppu ppu, int x, int y) => ppu.FrameBuffer.Pixels[y * 256 + x];
+
+    [Fact]
+    public void SingleSprite8x8_RendersCorrectPixel()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on, full brightness
+        ppu.WriteRegister(0x01, 0x00); // OBSEL: 8x8 base
+        ppu.WriteRegister(0x2C, 0x10); // TM: OBJ enabled
+
+        // Tile 0 row 0 pixel 0 = color index 1 (bitplane 0 bit 7 set)
+        WriteTile4BppRow(ppu, 0, 0, 0x80, 0x00, 0x00, 0x00);
+
+        // OBJ palette 0, color 1 = red
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+
+        // Sprite 0 at (0,0), tile 0, palette 0
+        WriteSpriteOam(ppu, 0, 0, 0, 0, 0);
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFFFF0000u, "sprite pixel (0,0) should be red");
+        GetPixel(ppu, 1, 0).Should().Be(0xFF000000u, "sprite pixel (1,0) should be transparent (black)");
+    }
+
+    [Fact]
+    public void SingleSprite8x8_Palette1_ChangesColor()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        // Same tile setup: pixel 0 = color index 1
+        WriteTile4BppRow(ppu, 0, 0, 0x80, 0x00, 0x00, 0x00);
+
+        // Palette 0, color 1 = red
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+        // Palette 1, color 1 = green
+        SetCgramColor(ppu, 128 + 16 + 1, 0x03E0);
+
+        // Sprite 0 at (0,0), tile 0, palette 1
+        WriteSpriteOam(ppu, 0, 0, 0, 0, (1 << 1)); // palette = 1 (attr bits 1-3)
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFF00FF00u, "sprite with palette 1 should use green");
+    }
+
+    [Fact]
+    public void Sprite16x16_RendersFourTiles()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00); // OBSEL: 8x8/16x16
+        ppu.WriteRegister(0x2C, 0x10); // TM: OBJ enabled
+
+        // Tile 0 (top-left): pixel 0 = color 1
+        WriteTile4BppRow(ppu, 0, 0, 0x80, 0x00, 0x00, 0x00);
+        // Tile 1 (top-right): pixel 0 = color 1
+        WriteTile4BppRow(ppu, 1, 0, 0x80, 0x00, 0x00, 0x00);
+        // Tile 2 (bottom-left): pixel 0 = color 1
+        WriteTile4BppRow(ppu, 2, 0, 0x80, 0x00, 0x00, 0x00);
+        // Tile 3 (bottom-right): pixel 0 = color 1
+        WriteTile4BppRow(ppu, 3, 0, 0x80, 0x00, 0x00, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+
+        // Sprite 0 at (0,0), tile 0, palette 0, large=1
+        WriteSpriteOam(ppu, 0, 0, 0, 0, 0);
+        SetSpriteSizeFlags(ppu, 0, false, true);
+
+        // Clock enough scanlines to cover all 4 tiles (2 tile-rows of 8 pixels)
+        for (int i = 0; i < 16; i++)
+            ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFFFF0000u, "16x16 sprite top-left tile pixel");
+        GetPixel(ppu, 8, 0).Should().Be(0xFFFF0000u, "16x16 sprite top-right tile pixel");
+        GetPixel(ppu, 0, 8).Should().Be(0xFFFF0000u, "16x16 sprite bottom-left tile pixel");
+        GetPixel(ppu, 8, 8).Should().Be(0xFFFF0000u, "16x16 sprite bottom-right tile pixel");
+    }
+
+    [Fact]
+    public void SingleSprite8x8_At_X8_RendersCorrectPixel()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        WriteTile4BppRow(ppu, 0, 0, 0x80, 0x00, 0x00, 0x00);
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+
+        WriteSpriteOam(ppu, 0, 8, 0, 0, 0);
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 8, 0).Should().Be(0xFFFF0000u, "8x8 sprite at x=8 should render red at (8,0)");
+        GetPixel(ppu, 7, 0).Should().Be(0xFF000000u, "pixel before sprite at x=7 should be transparent");
+    }
+
+    [Fact]
+    public void SingleSprite8x8_WithTile1_RendersCorrectPixel()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        // Tile 0: no data (all transparent)
+        WriteTile4BppRow(ppu, 0, 0, 0x00, 0x00, 0x00, 0x00);
+        // Tile 1: pixel 0 = color 1
+        WriteTile4BppRow(ppu, 1, 0, 0x80, 0x00, 0x00, 0x00);
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+
+        // Sprite 0 at (0,0), tile 1
+        WriteSpriteOam(ppu, 0, 0, 0, 1, 0);
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFFFF0000u, "sprite using tile 1 renders red at (0,0)");
+    }
+
+    [Fact]
+    public void LargeSprite_SameTile_WorksForCoverageTest()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        for (int ti = 0; ti < 4; ti++)
+            WriteTile4BppRow(ppu, ti, 0, 0x80, 0x00, 0x00, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+
+        WriteSpriteOam(ppu, 0, 0, 0, 0, 0);
+        WriteSpriteOam(ppu, 1, 8, 0, 1, 0);
+        SetSpriteSizeFlags(ppu, 1, false, false);
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFFFF0000u, "first sprite at (0,0) red");
+        GetPixel(ppu, 8, 0).Should().Be(0xFFFF0000u, "second sprite at (8,0) with tile 1 red");
+    }
+
+    [Fact]
+    public void Single16x16Sprite_WithAllTiles_ByIndex()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        // Each tile row 0 writes a distinct color index (only pixel 0)
+        // Tile 0: color 1 (red)
+        WriteTile4BppRow(ppu, 0, 0, 0x80, 0x00, 0x00, 0x00);
+        // Tile 1: color 2 (green) — for top-right
+        WriteTile4BppRow(ppu, 1, 0, 0x80, 0x00, 0x00, 0x00);
+        // Tile 2: color 1 (red) — for bottom-left
+        WriteTile4BppRow(ppu, 2, 0, 0x80, 0x00, 0x00, 0x00);
+        // Tile 3: color 1 (red) — for bottom-right
+        WriteTile4BppRow(ppu, 3, 0, 0x80, 0x00, 0x00, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // red
+
+        // Single 16x16 sprite at (0,0), base tile 0, large=1
+        WriteSpriteOam(ppu, 0, 0, 0, 0, 0);
+        SetSpriteSizeFlags(ppu, 0, false, true);
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFFFF0000u, "16x16 sprite (0,0) tile 0");
+        GetPixel(ppu, 8, 0).Should().Be(0xFFFF0000u, "16x16 sprite (8,0) tile 1");
+    }
+
+    [Fact]
+    public void Single16x16Sprite_DifferentTile1()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        // Tile 0 blank
+        WriteTile4BppRow(ppu, 0, 0, 0x00, 0x00, 0x00, 0x00);
+        // Tile 1 red (pixel 0 only)
+        WriteTile4BppRow(ppu, 1, 0, 0x80, 0x00, 0x00, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F);
+
+        // 16x16 sprite at (0,0) large, base tile 0
+        WriteSpriteOam(ppu, 0, 0, 0, 0, 0);
+        SetSpriteSizeFlags(ppu, 0, false, true);
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFF000000u, "tile 0 blank, so (0,0) is backdrop");
+        GetPixel(ppu, 8, 0).Should().Be(0xFFFF0000u, "tile 1 red at (8,0)");
+    }
+
+    [Fact]
+    public void Sprite16x16_ProbeAllScanlinePixels()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        for (int ti = 0; ti < 4; ti++)
+            WriteTile4BppRow(ppu, ti, 0, 0x80, 0x00, 0x00, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // red
+
+        WriteSpriteOam(ppu, 0, 0, 0, 0, 0);
+        SetSpriteSizeFlags(ppu, 0, false, true);
+
+        ClockScanline(ppu);
+
+        GetPixel(ppu, 0, 0).Should().Be(0xFFFF0000u, "pixel (0,0) = tile 0 pixel 0 = red");
+        GetPixel(ppu, 8, 0).Should().Be(0xFFFF0000u, "pixel (8,0) = tile 1 pixel 0 = red");
+    }
+
+    [Fact]
+    public void SpriteHFlip_MirrorsHorizontally()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        // Tile 0 row 0: pixel 0 = color 1 (bp0 bit7=1), pixel 7 = color 2 (bp1 bit0=1)
+        WriteTile4BppRow(ppu, 0, 0, 0x80, 0x01, 0x00, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // color 1 = red
+        SetCgramColor(ppu, 128 + 2, 0x03E0); // color 2 = green
+
+        // Sprite 0: no flip at x=10 — pixel 0 = red
+        WriteSpriteOam(ppu, 0, 10, 0, 0, 0);
+        // Sprite 1: hflip at x=20 — pixel 0 maps to tile pixel 7 = green
+        WriteSpriteOam(ppu, 1, 20, 0, 0, 0x40);
+
+        SetSpriteSizeFlags(ppu, 0, false, false);
+        SetSpriteSizeFlags(ppu, 1, false, false);
+
+        ClockScanline(ppu);
+
+        // No-flip sprite at x=10: pixel 0 (relX=0) = color 1
+        GetPixel(ppu, 10, 0).Should().Be(0xFFFF0000u, "hflip=0, pixel 0 = red (color 1)");
+
+        // H-flip sprite at x=20: pixel 0 = relX=0 → effX=7 → pixel 7 = color 2
+        GetPixel(ppu, 20, 0).Should().Be(0xFF00FF00u, "hflip=1, pixel 0 maps to tile pixel 7 = green (color 2)");
+    }
+
+    [Fact]
+    public void SpritePriority_HigherOverwritesLower()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F);
+        ppu.WriteRegister(0x01, 0x00);
+        ppu.WriteRegister(0x2C, 0x10);
+
+        // Two tiles, each with pixel 0 = color 1
+        WriteTile4BppRow(ppu, 0, 0, 0x80, 0x00, 0x00, 0x00);
+        WriteTile4BppRow(ppu, 1, 0, 0x80, 0x00, 0x00, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // red
+        SetCgramColor(ppu, 128 + 16 + 1, 0x03E0); // green (palette 1)
+
+        // Sprite 0 at (0,0), tile 0, palette 0, priority=3 (highest)
+        WriteSpriteOam(ppu, 0, 0, 0, 0, (3 << 4));
+        // Sprite 1 at (0,0), tile 1, palette 1, priority=0 (lowest)
+        WriteSpriteOam(ppu, 1, 0, 0, 1, (0 << 4) | (1 << 1));
+
+        SetSpriteSizeFlags(ppu, 0, false, false);
+        SetSpriteSizeFlags(ppu, 1, false, false);
+
+        ClockScanline(ppu);
+
+        // Sprite 0 has priority 3, sprite 1 has priority 0.
+        // Sprite 0 should show (red) since higher priority.
+        GetPixel(ppu, 0, 0).Should().Be(0xFFFF0000u, "higher-priority sprite (pri=3) should be visible");
     }
 }
 
@@ -709,25 +1073,24 @@ public sealed class Mode1PriorityTests
     public void Mode1_Bg3HighPriority_CanOverrideBg1LowPriority()
     {
         var ppu = CreatePpu();
-        ppu.Reset();
 
         ppu.WriteRegister(0x00, 0x0F); // screen on
         ppu.WriteRegister(0x05, 0x09); // Mode 1 + BG3 high priority
         ppu.WriteRegister(0x2C, 0x05); // BG1 + BG3 enabled
-        ppu.WriteRegister(0x07, 0x00); // BG1SC
-        ppu.WriteRegister(0x09, 0x00); // BG3SC
+        ppu.WriteRegister(0x07, 0x00); // BG1SC: tilemap at word 0x0000
+        ppu.WriteRegister(0x09, 0x04); // BG3SC: tilemap at byte 0x0800 (word 0x0400)
         ppu.WriteRegister(0x0B, 0x00); // BG1 char base = 0
-        ppu.WriteRegister(0x0C, 0x04); // BG3 char base = $2000 bytes
+        ppu.WriteRegister(0x0C, 0x04); // BG3 char base = bits 3-0=4: 4*0x2000=0x8000
 
         // BG1 low-priority tile 1 at map entry 0, palette 1
         SetVramWord(ppu, 0x0000, 0x0401);
         // BG3 high-priority tile 1 at map entry 0 (priority bit set), palette 0
-        SetVramWord(ppu, 0x0000 + 0x800, 0x2001);
+        SetVramWord(ppu, 0x0400, 0x2001);
 
         // BG1 tile 1: color index 1, palette 0 -> red
         Write4BppSolidTile(ppu, 0x0020, 0x01);
-        // BG3 tile 1 at char base $2000 bytes -> word $1000 -> byte $2000, color index 1, palette 0 -> green
-        Write2BppSolidTile(ppu, 0x2000 + 0x0010, 0x01);
+        // BG3 tile 1 at char base $8000 bytes (BG34NBA=0x04: 4 * 0x2000 = 0x8000), color index 1, palette 0 -> green
+        Write2BppSolidTile(ppu, 0x8010, 0x01);
 
         SetCgramColor(ppu, 17, 0x001F);     // BG1 palette 1, color 1 = red
         SetCgramColor(ppu, 1, 0x03E0);      // BG3 palette 0, color 1 = green
@@ -768,27 +1131,26 @@ public sealed class Mode1PriorityTests
 
     private static void Write4BppSolidTile(Ppu ppu, int byteBase, int colorIndex)
     {
-        byte p0 = (byte)(((colorIndex & 0x01) != 0) ? 0xFF : 0x00);
-        byte p1 = (byte)(((colorIndex & 0x02) != 0) ? 0xFF : 0x00);
-        byte p2 = (byte)(((colorIndex & 0x04) != 0) ? 0xFF : 0x00);
-        byte p3 = (byte)(((colorIndex & 0x08) != 0) ? 0xFF : 0x00);
+        ushort p01 = (ushort)(((colorIndex & 0x01) != 0 ? 0xFF : 0x00)
+                            | (((colorIndex & 0x02) != 0 ? 0xFF : 0x00) << 8));
+        ushort p23 = (ushort)(((colorIndex & 0x04) != 0 ? 0xFF : 0x00)
+                            | (((colorIndex & 0x08) != 0 ? 0xFF : 0x00) << 8));
         for (int row = 0; row < 8; row++)
         {
-            WriteVramByte(ppu, byteBase + row * 2, p0);
-            WriteVramByte(ppu, byteBase + row * 2 + 1, p1);
-            WriteVramByte(ppu, byteBase + 16 + row * 2, p2);
-            WriteVramByte(ppu, byteBase + 16 + row * 2 + 1, p3);
+            int baseWordAddr = (byteBase + row * 2) / 2;
+            SetVramWord(ppu, baseWordAddr, p01);
+            SetVramWord(ppu, baseWordAddr + 8, p23);
         }
     }
 
     private static void Write2BppSolidTile(Ppu ppu, int byteBase, int colorIndex)
     {
-        byte p0 = (byte)(((colorIndex & 0x01) != 0) ? 0xFF : 0x00);
-        byte p1 = (byte)(((colorIndex & 0x02) != 0) ? 0xFF : 0x00);
+        ushort word = (ushort)(((colorIndex & 0x01) != 0 ? 0xFF : 0x00)
+                             | (((colorIndex & 0x02) != 0 ? 0xFF : 0x00) << 8));
         for (int row = 0; row < 8; row++)
         {
-            WriteVramByte(ppu, byteBase + row * 2, p0);
-            WriteVramByte(ppu, byteBase + row * 2 + 1, p1);
+            int wordAddr = (byteBase + row * 2) / 2;
+            SetVramWord(ppu, wordAddr, word);
         }
     }
 
@@ -797,5 +1159,204 @@ public sealed class Mode1PriorityTests
         ppu.WriteRegister(0x21, (byte)colorIndex);
         ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
         ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+}
+
+public sealed class ObjSizeTableTests
+{
+    private static Ppu CreatePpu()
+    {
+        var ppu = new Ppu(NullLogger<Ppu>.Instance);
+        ppu.Reset();
+        HideUnusedSprites(ppu);
+        return ppu;
+    }
+
+    private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
+    {
+        ppu.WriteRegister(0x21, (byte)colorIndex);
+        ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
+        ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+
+    private static void WriteOamEntry(Ppu ppu, int index, int x, int y, int tile, byte attr)
+    {
+        int lowAddr = index * 4;
+        ppu.WriteRegister(0x02, (byte)(lowAddr & 0xFF));
+        ppu.WriteRegister(0x03, (byte)((lowAddr >> 8) & 0x01));
+        ppu.WriteRegister(0x04, (byte)(x & 0xFF));
+        ppu.WriteRegister(0x04, (byte)(y & 0xFF));
+        ppu.WriteRegister(0x04, (byte)(tile & 0xFF));
+        ppu.WriteRegister(0x04, attr);
+    }
+
+    private static void SetHighTableBits(Ppu ppu, int index, bool xBit9, bool large)
+    {
+        int byteIndex = 512 + (index >> 2);
+        int shift = (index & 3) * 2;
+        ppu.WriteRegister(0x02, (byte)(byteIndex & 0xFF));
+        ppu.WriteRegister(0x04, (byte)((ppu.ReadRegister(0x08) & ~(3 << shift))
+                                        | ((xBit9 ? 1 : 0) << shift)
+                                        | ((large ? 1 : 0) << (shift + 1))));
+    }
+
+    private static void HideUnusedSprites(Ppu ppu)
+    {
+        for (int byteIdx = 513; byteIdx < 544; byteIdx++)
+        {
+            ppu.WriteRegister(0x02, (byte)(byteIdx & 0xFF));
+            ppu.WriteRegister(0x03, (byte)((byteIdx >> 8) & 0x03));
+            ppu.WriteRegister(0x04, 0b01010101);
+        }
+        ppu.WriteRegister(0x02, 0x00);
+        ppu.WriteRegister(0x03, 0x00);
+    }
+
+    [Theory]
+    [InlineData(6, false)] // case 6 non-large: should be (8, 16)
+    [InlineData(7, false)] // case 7 non-large: should be (8, 16)
+    public void ObelsValue_NonLargeSprite_WidthIs8(int obselValue, bool large)
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x01, (byte)(obselValue << 5)); // OBSEL
+        ppu.WriteRegister(0x2C, 0x10); // OBJ enabled on main screen
+
+        // Sprite 0 at (0, 0), tile 0, attr=0x20 (priority 2)
+        WriteOamEntry(ppu, 0, 0, 0, 0, 0x20);
+        SetHighTableBits(ppu, 0, false, large);
+
+        // Tile 0 row 0 pixel 0 opaque (color 1)
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, 0x00);
+        ppu.WriteRegister(0x17, 0x00);
+        ppu.WriteRegister(0x18, 0x80);
+        ppu.WriteRegister(0x19, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // red
+
+        ppu.Clock(4);
+
+        uint inside  = ppu.FrameBuffer.Pixels[0]; // x=0, y=0 — inside sprite
+        uint outside = ppu.FrameBuffer.Pixels[8]; // x=8, y=0 — outside if width=8
+
+        inside.Should().Be(SnesFrameBuffer.SnesColorToArgb(0x001F));
+        outside.Should().Be(0xFF000000u); // backdrop/transparent
+    }
+
+    [Fact]
+    public void ObelBaseNonZero_SpriteTileFetchesFromCorrectVramAddress()
+    {
+        var ppu = CreatePpu();
+        ppu.Reset();
+
+        // OBSEL = $01 => base = 1 * $2000 = $2000 bytes = $1000 words
+        // bits 7-5 = 0 (8x8/16x16), bits 4-3 = 0, bits 2-0 = 1
+        ppu.WriteRegister(0x01, (byte)(0 << 5 | 0 << 3 | 1));
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x2C, 0x10); // OBJ enabled
+
+        // Sprite 0 at (0,0), tile 0, attr=0x20 (priority 2)
+        WriteOamEntry(ppu, 0, 0, 0, 0, 0x20);
+        SetHighTableBits(ppu, 0, false, false);
+
+        // Write tile 0 data at VRAM word $1000 (OBSEL base $2000 bytes = $1000 words)
+        // row 0 pixel 0 = color 1
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, 0x00);
+        ppu.WriteRegister(0x17, 0x10); // word address $1000
+        ppu.WriteRegister(0x18, 0x80);
+        ppu.WriteRegister(0x19, 0x00);
+
+        SetCgramColor(ppu, 128 + 1, 0x001F); // red
+
+        ppu.Clock(4);
+
+        uint pixel = ppu.FrameBuffer.Pixels[0];
+        pixel.Should().Be(SnesFrameBuffer.SnesColorToArgb(0x001F));
+    }
+}
+
+public sealed class Mode2OffsetTests
+{
+    private static Ppu CreatePpu() => new(NullLogger<Ppu>.Instance);
+
+    private static void SetVramWord(Ppu ppu, int wordAddr, ushort value)
+    {
+        ppu.WriteRegister(0x15, 0x80);
+        ppu.WriteRegister(0x16, (byte)(wordAddr & 0xFF));
+        ppu.WriteRegister(0x17, (byte)(wordAddr >> 8));
+        ppu.WriteRegister(0x18, (byte)(value & 0xFF));
+        ppu.WriteRegister(0x19, (byte)(value >> 8));
+    }
+
+    private static void SetCgramColor(Ppu ppu, int colorIndex, ushort snesColor)
+    {
+        ppu.WriteRegister(0x21, (byte)colorIndex);
+        ppu.WriteRegister(0x22, (byte)(snesColor & 0xFF));
+        ppu.WriteRegister(0x22, (byte)(snesColor >> 8));
+    }
+
+    [Fact]
+    public void Mode2_OffsetZero_PixelFromBg1Tile()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x05, 0x02); // Mode 2, no OPT
+        ppu.WriteRegister(0x2C, 0x03); // BG1 + BG2 enabled
+        ppu.WriteRegister(0x07, 0x00); // BG1SC = 0
+        ppu.WriteRegister(0x08, 0x10); // BG2SC = 0x10
+        ppu.WriteRegister(0x0B, 0x00); // BG12NBA
+
+        // BG1 tilemap entry at (0,0): tile 1, palette 0, low priority
+        SetVramWord(ppu, 0x0000, 0x0001);
+        // BG1 char data for tile 1 at char base 0 + 1*32 = byte 32 = word 16:
+        // row 0 pixel 0 = color 1 (bitplane 0 = 0x80)
+        SetVramWord(ppu, 0x0010, 0x0080);
+
+        // BG2 tilemap at tile (0,0): offset = 0 (lower byte)
+        // BG2SC=0x10 → base word = (0x10>>2)*0x800/2 = 0x1000
+        SetVramWord(ppu, 0x1000, 0x0000);
+
+        SetCgramColor(ppu, 1, 0x001F); // palette 0, color 1 = red
+
+        ppu.Clock(4);
+
+        uint pixel = ppu.FrameBuffer.Pixels[0];
+        pixel.Should().Be(SnesFrameBuffer.SnesColorToArgb(0x001F));
+    }
+
+    [Fact]
+    public void Mode2_OffsetEight_ShiftsBg1TileRight()
+    {
+        var ppu = CreatePpu();
+
+        ppu.WriteRegister(0x00, 0x0F); // screen on
+        ppu.WriteRegister(0x05, 0x02); // Mode 2, no OPT
+        ppu.WriteRegister(0x2C, 0x03); // BG1 + BG2 enabled
+        ppu.WriteRegister(0x07, 0x00); // BG1SC = 0
+        ppu.WriteRegister(0x08, 0x10); // BG2SC = 0x10
+        ppu.WriteRegister(0x0B, 0x00); // BG12NBA
+
+        // BG1 tilemap: tile 1 = colored
+        SetVramWord(ppu, 0x0000, 0x0001);
+        // BG1 char data: tile 1, pixel 0 opaque
+        SetVramWord(ppu, 0x0010, 0x0080);
+        // BG2 tilemap at tile (0,0): offset = 8 → shifts tile 1 to tile 2's position
+        SetVramWord(ppu, 0x1000, 0x0008);
+
+        SetCgramColor(ppu, 1, 0x001F); // red
+
+        ppu.Clock(4);
+
+        // With offset=8, BG1 samples at x=8 → tile (8/8=1) = tile 1 in tilemap
+        // Wait — offset 8 shifts scroll by 8, so the source x = 0+8=8
+        // tileX = 8/8 = 1 in BG1's tilemap → reads tilemap at (1,0)
+        // Tilemap entry at (1,0) was never set → default 0 → tile 0 → char data starts at 0
+        // All char data at 0 is zero → transparent → backdrop
+        uint pixel = ppu.FrameBuffer.Pixels[0];
+        pixel.Should().Be(0xFF000000u); // transparent/backdrop
     }
 }

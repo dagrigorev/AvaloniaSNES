@@ -40,6 +40,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private bool _rdnmiLatched;
     private bool _nmiPending;
     private bool _nmiScheduledThisVblank;
+    private bool _irqFlag;
     private byte _wrio;       // $4201 — Joypad programmable I/O port
     private byte _wrmpya;     // $4202 — Multiplicand
     private byte _wrmpyb;     // $4203 — Multiplier
@@ -47,6 +48,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private ushort _rddiv;    // $4214/15 — Divide result
     private ushort _wrdiva;   // $4204/05 — latched dividend for division
 
+    private byte _lastBusValue = 0xFF;
     private byte _lastCpuPbr;
     private ushort _lastCpuPc;
     private int _traceFrame = -1;
@@ -54,6 +56,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
     private int _ioTraceCount;
     private int _vblankTraceCount;
     private int _nmiReadTraceCount;
+    public int NmiFireCount; // diagnostics: how many times ConsumeNmi returned true
 
     public string Name => "MemoryBus";
 
@@ -92,6 +95,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _nmiPending      = false;
         _nmiScheduledThisVblank = false;
         _hvbjoy          = 0;
+        _irqFlag         = false;
         _wrdiva          = 0;
         _rddiv           = 0;
         _rdmpy           = 0;
@@ -101,7 +105,9 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
         _traceScanline   = -1;
         _ioTraceCount    = 0;
         _vblankTraceCount = 0;
-        _nmiReadTraceCount = 0;
+        _nmiReadTraceCount    = 0;
+        NmiFireCount          = 0;
+        _lastBusValue    = 0xFF;
         Array.Clear(_dmaRegisters);
     }
 
@@ -117,6 +123,8 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             ((inVBlank ? 0x80 : 0x00) |
              (inHBlank ? 0x40 : 0x00));
     }
+
+    public byte NmitimenRead() => _nmitimen;
 
     public void SetCpuTraceContext(byte pbr, ushort pc)
     {
@@ -174,6 +182,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             return false;
 
         _nmiPending = false;
+        NmiFireCount++;
 
         if (_vblankTraceCount < 512)
         {
@@ -188,6 +197,8 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
     public void ClearNmiFlag() => _rdnmiLatched = false;
 
+    public void SetIrqFlag() => _irqFlag = true;
+
     // ── IMemoryBus ────────────────────────────────────────────────────────────
 
     public byte Read(uint address)
@@ -197,7 +208,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
 
         if (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))
         {
-            return offset switch
+            return CaptureBus(offset switch
             {
                 <= 0x1FFF               => _wram.ReadDirect(offset),
                 >= 0x2100 and <= 0x213F => ReadPpuRegister(offset),
@@ -208,20 +219,27 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                 >= 0x4300 and <= 0x43FF => ReadDmaRegister(offset),
                 >= 0x8000               => ReadRom(bank, offset),
                 _                       => TryReadSram(bank, offset)
-            };
+            });
         }
 
         if (bank == 0x7E || bank == 0x7F)
-            return _wram.ReadDirect(((bank & 1) << 16) | offset);
+            return CaptureBus(_wram.ReadDirect(((bank & 1) << 16) | offset));
 
         if ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0)
-            return ReadRom(bank, offset);
+            return CaptureBus(ReadRom(bank, offset));
 
-        return TryReadSram(bank, offset);
+        return CaptureBus(TryReadSram(bank, offset));
+    }
+
+    private byte CaptureBus(byte value)
+    {
+        _lastBusValue = value;
+        return value;
     }
 
     public void Write(uint address, byte value)
     {
+        _lastBusValue = value;
         byte bank = BitHelper.BankOf(address);
         ushort offset = BitHelper.OffsetOf(address);
 
@@ -359,7 +377,12 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
                 _rdnmiLatched = false;
                 return val;
             }
-            case 0x4211: return 0x00;   // TIMEUP: IRQ flag (not implemented)
+            case 0x4211:
+            {
+                byte val = (byte)(_irqFlag ? 0x80 : 0x00);
+                _irqFlag = false;
+                return val;
+            }
             case 0x4212:
             {
                 if (_nmiReadTraceCount < 256)
@@ -591,7 +614,7 @@ public sealed class MemoryBus : IMemoryBus, IEmulatorComponent
             _ => 0
         };
 
-    private static byte OpenBus() => 0xFF;
+    private byte OpenBus() => _lastBusValue;
 
     public void SaveSram(string path)
     {

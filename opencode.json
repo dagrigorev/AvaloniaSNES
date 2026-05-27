@@ -1,0 +1,230 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "deepseek/deepseek-v4-pro",
+  "small_model": "deepseek/deepseek-v4-flash",
+  "default_agent": "snes-orchestrator",
+  "share": "manual",
+  "autoupdate": "notify",
+  "snapshot": true,
+  "shell": "pwsh",
+  "provider": {
+    "deepseek": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "DeepSeek",
+      "options": {
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "{env:DEEPSEEK_API_KEY}",
+        "timeout": 900000,
+        "chunkTimeout": 90000
+      },
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "limit": {
+            "context": 1048576,
+            "output": 32768
+          }
+        }
+      }
+    }
+  },
+  "instructions": [
+    "AGENTS.md",
+    "docs/architecture.md",
+    "docs/emulation-notes.md",
+    "docs/roadmap.md",
+    ".opencode/project-map.md",
+    ".opencode/tasks/project-backlog.md"
+  ],
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "lsp": "allow",
+    "webfetch": "deny",
+    "websearch": "deny",
+    "external_directory": "ask",
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git branch*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "dotnet restore*": "allow",
+      "dotnet build*": "allow",
+      "dotnet test*": "allow",
+      "dotnet run*": "ask",
+      "git checkout -b*": "ask",
+      "git add*": "ask",
+      "git commit*": "ask",
+      "git push*": "ask"
+    },
+    "task": "allow",
+    "todowrite": "allow",
+    "question": "allow"
+  },
+  "agent": {
+    "snes-orchestrator": {
+      "mode": "primary",
+      "description": "Coordinates SNES emulator feature/fix work across subsystem agents.",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/snes-orchestrator.md}",
+      "steps": 40,
+      "permission": {
+        "task": {
+          "*": "deny",
+          "emulator-core-agent": "allow",
+          "ppu-rendering-agent": "allow",
+          "apu-audio-agent": "allow",
+          "avalonia-ui-agent": "allow",
+          "debugger-agent": "allow",
+          "test-verifier-agent": "allow",
+          "review-agent": "allow",
+          "git-commit-agent": "ask"
+        }
+      }
+    },
+    "implementation": {
+      "mode": "primary",
+      "description": "General implementation agent for small self-contained changes.",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/implementation.md}",
+      "steps": 30
+    },
+    "review": {
+      "mode": "primary",
+      "description": "Read-only planning and review agent.",
+      "model": "deepseek/deepseek-v4-flash",
+      "prompt": "{file:.opencode/agents/review-agent.md}",
+      "steps": 20,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "dotnet test*": "allow",
+          "dotnet build*": "allow"
+        }
+      }
+    },
+    "emulator-core-agent": {
+      "mode": "subagent",
+      "description": "CPU, memory bus, DMA, timing and save-state specialist.",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/emulator-core-agent.md}",
+      "steps": 25
+    },
+    "ppu-rendering-agent": {
+      "mode": "subagent",
+      "description": "PPU, framebuffer, BG/OBJ rendering and visual regression specialist.",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/ppu-rendering-agent.md}",
+      "steps": 30
+    },
+    "apu-audio-agent": {
+      "mode": "subagent",
+      "description": "APU/SPC700/DSP/BRR/audio specialist.",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/apu-audio-agent.md}",
+      "steps": 30
+    },
+    "avalonia-ui-agent": {
+      "mode": "subagent",
+      "description": "Avalonia UI, MVVM, input UX and diagnostics specialist.",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/avalonia-ui-agent.md}",
+      "steps": 25
+    },
+    "debugger-agent": {
+      "mode": "subagent",
+      "description": "Crash/hang reproduction, instrumentation and minimization specialist.",
+      "model": "deepseek/deepseek-v4-pro",
+      "prompt": "{file:.opencode/agents/debugger-agent.md}",
+      "steps": 30
+    },
+    "test-verifier-agent": {
+      "mode": "subagent",
+      "description": "xUnit, deterministic harness and regression verification specialist.",
+      "model": "deepseek/deepseek-v4-flash",
+      "prompt": "{file:.opencode/agents/test-verifier-agent.md}",
+      "steps": 25
+    },
+    "review-agent": {
+      "mode": "subagent",
+      "description": "Read-only architectural/code review specialist.",
+      "model": "deepseek/deepseek-v4-flash",
+      "prompt": "{file:.opencode/agents/review-agent.md}",
+      "steps": 20,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "dotnet build*": "allow",
+          "dotnet test*": "allow"
+        }
+      }
+    },
+    "git-commit-agent": {
+      "mode": "subagent",
+      "description": "Final diff review and atomic commit specialist.",
+      "model": "deepseek/deepseek-v4-flash",
+      "prompt": "{file:.opencode/agents/git-commit-agent.md}",
+      "steps": 15,
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git add*": "ask",
+          "git commit*": "ask",
+          "git push*": "deny"
+        }
+      }
+    }
+  },
+  "watcher": {
+    "ignore": [
+      ".git/**",
+      ".vs/**",
+      ".idea/**",
+      ".vscode/**",
+      "bin/**",
+      "obj/**",
+      "TestResults/**",
+      "coverage/**",
+      "artifacts/**",
+      "dist/**",
+      "*.user",
+      "*.suo",
+      "*.nupkg",
+      "*.snupkg",
+      "*.smc",
+      "*.sfc",
+      "*.fig",
+      "*.swc"
+    ]
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 20000
+  },
+  "lsp": true,
+  "formatter": true
+}
